@@ -1,37 +1,150 @@
 ---
 name: browser-use-job-search
-description: "Automated job search on recruitment websites. Input: JSON file (urls+companies), search keyword, recruitment mode (1=campus, 2=intern, 3=none). Output: concise report of matching/non-matching job links."
-version: 2.0.0
-allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep
+description: "Automated job search on recruitment websites with dual-mode trigger. Workflow mode: triggered by 'targeted-url-search', batch-searches URLs from previous node. Atomic mode: triggered by 'search specific content on specific website' semantics. Validates required inputs (URL+keyword) before execution."
+version: 3.0.0
+allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep, AskUserQuestion
 display_name: "招聘网站自动化搜索"
 display_name_en: "Job Site Auto Search"
-description_zh: "输入JSON文件(含URL和企业信息)+搜索关键词+招聘项目模式(1=校招/2=实习/3=不勾选)，自动打开招聘网站、勾选复选框、搜索关键词、从第一页结果中筛选标题含搜索词的岗位链接"
-description_en: "Input JSON file + search keyword + recruitment mode, auto-open sites, check boxes, search, filter first-page results by title substring"
+description_zh: "两种触发模式：工作流模式（提及targeted-url-search，对上一节点输出网站批量检索）和原子模式（在特定网站检索特定内容语义）。自动校验必填参数（URL+关键词），收集补充信息后执行：打开网站→勾选复选框→搜索关键词→第一页结果筛选→输出报告"
+description_en: "Two trigger modes: workflow (mention targeted-url-search, batch search from previous node output) and atomic (search specific content on specific website). Validates required inputs, collects supplementary info, executes: open→check→search→filter first page→report"
 visibility: "private"
 agent_created: true
 ---
 
 # 招聘网站自动化岗位搜索
 
-输入 JSON 文件（含 URL 和企业信息）+ 搜索关键词 + 招聘项目模式，自动完成：打开网站 → 勾选招聘项目复选框 → 搜索关键词 → 从第一页结果中筛选标题含搜索词的岗位链接 → 输出精炼报告。
+两种触发模式 + 必填参数校验 + 自动执行：打开网站 → 勾选招聘项目复选框 → 搜索关键词 → 从第一页结果中筛选标题含搜索词的岗位链接 → 输出精炼报告。
 
-## 输入参数
+---
 
-| 参数 | 变量名 | 类型 | 说明 |
-|------|--------|------|------|
-| JSON 文件路径 | `JSON_FILE` | string | 含 `招聘企业` 和 `投递链接` 字段的 JSON 文件 |
-| 搜索关键词 | `KEYWORD` | string | 如 "前端"、"后端"、"算法"、"产品" 等 |
-| 招聘项目模式 | `MODE` | int | 1=勾选"校招/全职/正式"类；2=勾选"实习/日常/暑假"类；3=不勾选 |
+## 一、触发模式
 
-## 输出
+本技能有两种触发模式，根据用户提示词自动判断。
+
+### 模式一：工作流模式
+
+| 项目 | 说明 |
+|------|------|
+| **触发条件** | 用户明确提及 "targeted-url-search" |
+| **适用场景** | 上一个节点已输出网站列表（如从智能表格筛选出的企业投递链接 JSON），需要对这些网站进行批量检索 |
+| **URL 来源** | 上一节点输出的 JSON 文件（含企业名和投递链接） |
+
+### 模式二：原子模式
+
+| 项目 | 说明 |
+|------|------|
+| **触发条件** | 用户提示词包含类似"在特定网站检索特定内容"语义（如"在 xx 网站上搜索前端岗位"、"帮我看看这个链接里有没有算法岗"） |
+| **适用场景** | 用户直接提供待检索网站 URL，不依赖上一节点输出 |
+| **URL 来源** | 用户直接输入 |
+
+> **触发判断优先级**：如果用户同时满足两种条件，优先判定为**工作流模式**。
+>
+> **触发词模式详见** `references/mode-detection.md`。
+
+---
+
+## 二、前置步骤：输入收集与校验
+
+### Step 0a: 检测触发模式
+
+检查用户提示词：
+
+- 提示词包含 "targeted-url-search" → **工作流模式**，进入 Step 0b（工作流）
+- 提示词包含"在...网站...检索/搜索..."或"帮我看...链接...有没有...岗位"等类似语义 → **原子模式**，进入 Step 0b（原子）
+- 两者都不匹配 → **不触发本技能**
+
+### Step 0b: 从用户提示词中提取输入数据
+
+首先尝试从用户**当前提示词**中直接提取数据，避免不必要的二次询问。
+
+#### 工作流模式 — 提取逻辑
+
+1. **JSON_FILE**：检查上下文中是否存在上一节点输出的 JSON 文件路径（如 `smartsheet_filter_result.json`）。若存在，读取该文件获取 URL 列表和企业名。
+2. **KEYWORD**：从提示词中提取搜索关键词（如"前端"、"后端"、"算法"等）。
+3. **SUPPLEMENTARY**：从提示词中提取补充信息（如"校招"、"实习"等招聘项目模式提示）。
+4. **EXCLUDE_INDICES**：从提示词中提取用户明确排除的网站序号（如"第2个不用查"）。
+
+#### 原子模式 — 提取逻辑
+
+1. **URL_LIST**：从提示词中提取 URL（匹配 `https?://` 开头的字符串，支持多个）。
+2. **KEYWORD**：从提示词中提取搜索关键词。
+3. **SUPPLEMENTARY**：从提示词中提取补充信息。
+
+### Step 0c: 校验必填字段
+
+**必填字段**：`URL`（或 `JSON_FILE`）和 `KEYWORD`
+
+| 检查项 | 工作流模式 | 原子模式 |
+|--------|-----------|---------|
+| URL 来源 | JSON 文件是否存在且含有效 URL | 用户是否提供了有效 URL |
+| KEYWORD | 用户是否给出了搜索关键词 | 用户是否给出了搜索关键词 |
+
+**校验通过** → 进入 Step 0d 解析补充信息。
+
+**校验失败**（任一必填字段缺失）→ 提示用户缺少哪个字段，然后**根据模式重新询问**：
+
+#### 重新询问 — 工作流模式（重复 Step 0b 工作流）
+
+使用 `AskUserQuestion` 工具提问：
+
+```
+问题: "是否对上一个节点输出网站进行全量检索？"
+选项:
+  - "全量检索" → 对上一节点输出的所有网站进行检索，需补充关键词和补充信息
+  - "选择性检索" → 排除部分网站，需补充：排除序号、关键词、补充信息
+```
+
+- 若选择"全量检索"：继续询问"请给出检索关键词和补充信息（可选，如校招/实习）"
+- 若选择"选择性检索"：继续询问"请说明哪些网页不需要检索（给出序号）、检索关键词、补充信息（可选）"
+
+收集到回答后，**回到 Step 0c 重新校验**。
+
+#### 重新询问 — 原子模式（重复 Step 0b 原子）
+
+直接向用户提示：
+
+> "请输入待检索网站网址、检索关键词、其余补充信息（可选）。"
+
+并明确指出当前缺失的字段（如"未检测到网站网址"或"未检测到检索关键词"）。
+
+收集到回答后，**回到 Step 0c 重新校验**。
+
+> **循环终止条件**：必填字段校验通过，或用户明确表示取消任务。
+
+### Step 0d: 解析补充信息
+
+校验通过后，从 `SUPPLEMENTARY` 中解析招聘项目模式 `MODE`：
+
+| 补充信息关键词 | MODE 值 | 含义 |
+|--------------|---------|------|
+| "校招" "全职" "正式" "秋招" "春招" "社招" | 1 | 勾选"校招/全职/正式"类复选框 |
+| "实习" "日常" "暑假" "暑期" | 2 | 勾选"实习/日常/暑假"类复选框 |
+| 未提及或不确定 | 3 | 不勾选（默认） |
+
+### Step 0e: 构建最终输入参数
+
+| 参数 | 变量名 | 类型 | 必填 | 来源 |
+|------|--------|------|------|------|
+| URL 列表 | `URL_LIST` | array&lt;string&gt; | 是 | 工作流：JSON 提取（可排除部分）；原子：用户输入 |
+| 企业名列表 | `COMPANY_LIST` | array&lt;string&gt; | 否 | 工作流：JSON 提取；原子：从 URL 域名推断 |
+| 搜索关键词 | `KEYWORD` | string | 是 | 用户输入或从提示词提取 |
+| 招聘项目模式 | `MODE` | int | 否 | 从补充信息解析，默认 3 |
+| 补充信息 | `SUPPLEMENTARY` | string | 否 | 用户输入 |
+| 触发模式 | `TRIGGER_MODE` | string | — | "workflow" 或 "atomic"（用于报告） |
+
+---
+
+## 三、输出
 
 精炼 4 段式报告（详见 `references/report-template.md`）：
-1. 任务参数（模式、搜索词）
+1. 任务参数（触发模式、勾选模式、搜索词、URL 来源、站点数）
 2. 标题含搜索词的岗位表（企业名 + 职位标题 + 链接）
 3. 标题不含搜索词的岗位表（企业名 + 职位标题 + 链接）
 4. 注意事项（站点适配问题 + 错误处理经验）
 
-## 前提条件
+---
+
+## 四、前提条件
 
 ### 一次性预装（跳过如已安装）
 
@@ -50,25 +163,40 @@ export PATH="$HOME/.local/bin:$PATH"
 browser-use doctor  # 快速检查，~2s
 ```
 
-## 核心规则
+---
 
-1. **始终用 `browser-use open <url>`**（headless 模式，0 交互）。**禁止**用 `browser-use connect`（需要 Chrome 远程调试设置 + 用户交互）。
-2. **始终用 CLI 命令**（`browser-use input`、`browser-use click`、`browser-use state`）而非 Python harness 函数（`fill_input()`、`js()` 等）。CLI 命令正确处理事件分发，原始 helper 可能导致重复输入或遗漏 JS 框架事件。
+## 五、核心规则
+
+1. **始终用 `browser-use open <url>`**（headless 模式，0 交互）。**禁止**用 `browser-use connect`。
+2. **始终用 CLI 命令**（`browser-use input`、`browser-use click`、`browser-use state`）而非 Python harness 函数。
 3. **交互前先运行 `browser-use state`** 获取元素索引。
-4. **用 `browser-use state` 替代截图**进行页面分析——文本输出消耗远低于视觉 token。
+4. **用 `browser-use state` 替代截图**进行页面分析。
 5. **合并 JS 查询**——用单次 `browser-use eval` 提取所有需要的数据。
 6. **只看第一页结果**——搜索后不滚动、不分页，只提取当前可见的第一页职位。
 
-## 执行流程
+---
 
-### Step 1: 从 JSON 提取 URL 和企业信息
+## 六、执行流程
+
+### Step 1: 构建 URL 列表
+
+#### 工作流模式
 
 ```bash
 # 用 jq 提取企业名和 URL（不读全文件，节省 token）
+# 如果有排除序号，先过滤
 jq -r '.records[] | "\(.招聘企业)\t\(.投递链接)"' "$JSON_FILE"
 ```
 
 > 如果 JSON 结构不同，用 `jq -r '.. | .url? // empty'` 通用提取，或用 `jq keys` 查看字段名。
+>
+> 如果用户指定了排除序号（EXCLUDE_INDICES），跳过对应行。
+
+#### 原子模式
+
+用户提供的 URL 列表即为 `URL_LIST`，企业名从 URL 域名推断（如 `dexmal-inc.jobs.feishu.cn` → "原力灵机"）。
+
+> 如果无法从域名推断企业名，使用域名本身作为标识。
 
 ### Step 2: 环境检查
 
@@ -79,7 +207,7 @@ browser-use doctor  # 确认安装正常
 
 ### Step 3: 逐站点处理
 
-对 JSON 中的每个 URL，依次执行 3a-3g。
+对 `URL_LIST` 中的每个 URL，依次执行 3a-3g。
 
 #### 3a. 打开页面
 
@@ -201,12 +329,14 @@ browser-use close
 
 按 `references/report-template.md` 格式生成报告，包含 4 个部分：
 
-1. **任务参数**：勾选模式、搜索词、JSON 文件名
+1. **任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
 2. **标题含搜索词的岗位表**：企业名 | 职位标题 | 链接
 3. **标题不含搜索词的岗位表**：企业名 | 职位标题 | 链接
 4. **注意事项**：站点适配问题 + 错误处理经验（供下次执行参考）
 
-## 站点适配快速参考
+---
+
+## 七、站点适配快速参考
 
 | 站点类型 | 复选框定位 | 搜索框定位 | 职位链接选择器 |
 |---------|-----------|-----------|--------------|
@@ -216,7 +346,9 @@ browser-use close
 
 详见 `references/site-patterns.md`。
 
-## 注意事项（错误处理经验）
+---
+
+## 八、注意事项（错误处理经验）
 
 ### 环境问题
 
@@ -247,11 +379,13 @@ browser-use close
 - **大小写**：JS 的 `String.includes()` 区分大小写，中文无此问题，英文关键词需注意
 - **只看第一页**：不滚动加载更多，不分页检查，只提取搜索后当前可见的职位
 
-## 优化数据
+---
+
+## 九、优化数据
 
 | 指标 | 无技能 | 使用本技能 |
 |------|--------|-----------|
 | 步骤数 | 57 | 12-15（视站点数） |
 | 耗时 | ~34 min | ~5-8 min |
 | Token | ~45K | ~8-12K |
-| 用户交互 | 3 | 0 |
+| 用户交互 | 3 | 0（参数齐全时）/ 1-2（需补充参数时） |
