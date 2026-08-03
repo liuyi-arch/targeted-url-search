@@ -1,19 +1,25 @@
 ---
 name: targeted-url-search
 description: "Automated job search on recruitment websites with dual-mode trigger. Workflow mode: triggered by 'targeted-url-search', batch-searches URLs from previous node. Atomic mode: triggered by 'search specific content on specific website' semantics. Validates required inputs (URL+keyword) before execution."
-version: 3.0.0
+version: 4.0.0
 allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep, AskUserQuestion
 display_name: "招聘网站自动化搜索"
 display_name_en: "Job Site Auto Search"
-description_zh: "两种触发模式：工作流模式（提及targeted-url-search，对上一节点输出网站批量检索）和原子模式（在特定网站检索特定内容语义）。自动校验必填参数（URL+关键词），收集补充信息后执行：打开网站→勾选复选框→搜索关键词→第一页结果筛选→输出报告"
-description_en: "Two trigger modes: workflow (mention targeted-url-search, batch search from previous node output) and atomic (search specific content on specific website). Validates required inputs, collects supplementary info, executes: open→check→search→filter first page→report"
+description_zh: "两种触发模式：工作流模式（提及targeted-url-search，对上一节点输出网站批量检索）和原子模式（在特定网站检索特定内容语义）。自动校验必填参数（URL+关键词），强制搜索（不可跳过）→ 第一页结果筛选 → 空结果直接跳过（不兜底）→ 按格式输出报告"
+description_en: "Two trigger modes: workflow (mention targeted-url-search, batch search from previous node output) and atomic (search specific content on specific website). Validates required inputs, mandatory search step, filter first page, skip empty results (no fallback), structured report."
 visibility: "public"
 agent_created: true
 ---
-
 # 招聘网站自动化岗位搜索
 
-两种触发模式 + 必填参数校验 + 自动执行：打开网站 → 勾选招聘项目复选框 → 搜索关键词 → 从第一页结果中筛选标题含搜索词的岗位链接 → 输出精炼报告。
+两种触发模式 + 必填参数校验 + **强制搜索** + 空结果直接跳过 → 输出精炼报告。
+
+> **v4.0 重大变更**：
+> - 所有浏览器命令升级为 **browser-use v3.0** Python pipe 语法（`browser-use <<'PY'...PY'`）
+> - 搜索步骤改为**强制执行**，不可跳过（即使页面默认列表已含目标岗位也必须走搜索流程）
+> - 搜索结果为空 → **直接跳过**，不尝试兜底策略（URL 参数、分页等）
+> - 输出格式简化：匹配→网站名称+链接；不匹配→网站名称+状态+说明+网站链接
+> - 增强原子模式触发检测（新增"在...中用...检索"、"是否有相关岗位"等模式）
 
 ---
 
@@ -33,9 +39,20 @@ agent_created: true
 
 | 项目 | 说明 |
 |------|------|
-| **触发条件** | 用户提示词包含类似"在特定网站检索特定内容"语义（如"在 xx 网站上搜索前端岗位"、"帮我看看这个链接里有没有算法岗"） |
+| **触发条件** | 用户提示词包含"在特定网站检索特定内容"语义 |
 | **适用场景** | 用户直接提供待检索网站 URL，不依赖上一节点输出 |
 | **URL 来源** | 用户直接输入 |
+
+**原子模式触发词（增强版）**：
+
+| 语义模式 | 示例 |
+|---------|------|
+| "在...网站/中/上用...检索/搜索..." | "在 https://xxx.com 中用'前端'关键词检索" |
+| "在...网站/中/上检索/搜索..." | "在拼多多校招网站上搜索前端岗位" |
+| "...里有没有/是否有...岗位" | "帮我看这个链接里有没有算法岗" |
+| "帮我看...链接...有没有/检索..." | "帮我看 https://xxx.com 检索前端" |
+| "打开...网址...搜索/检索..." | "打开 https://xxx.com 搜索后端" |
+| "...网站...找...职位/岗位" | "这个招聘网站帮我找产品经理职位" |
 
 > **触发判断优先级**：如果用户同时满足两种条件，优先判定为**工作流模式**。
 >
@@ -50,7 +67,7 @@ agent_created: true
 检查用户提示词：
 
 - 提示词包含 "targeted-url-search" → **工作流模式**，进入 Step 0b（工作流）
-- 提示词包含"在...网站...检索/搜索..."或"帮我看...链接...有没有...岗位"等类似语义 → **原子模式**，进入 Step 0b（原子）
+- 提示词包含上述原子模式触发词 → **原子模式**，进入 Step 0b（原子）
 - 两者都不匹配 → **不触发本技能**
 
 ### Step 0b: 从用户提示词中提取输入数据
@@ -95,7 +112,7 @@ agent_created: true
 ```
 
 - 若选择"全量检索"：继续询问"请给出检索关键词和补充信息（可选，如校招/实习）"
-- 若选择"选择性检索"：继续询问"请说明哪些网页不需要检索（给出序号）、检索关键词、补充信息（可选）"
+- 若选择"选择性检索"：���续询问"请说明哪些网页不需要检索（给出序号）、检索关键词、补充信息（可选）"
 
 收集到回答后，**回到 Step 0c 重新校验**。
 
@@ -136,11 +153,16 @@ agent_created: true
 
 ## 三、输出
 
-精炼 4 段式报告（详见 `references/report-template.md`）：
-1. 任务参数（触发模式、勾选模式、搜索词、URL 来源、站点数）
-2. 标题含搜索词的岗位表（企业名 + 职位标题 + 链接）
-3. 标题不含搜索词的岗位表（企业名 + 职位标题 + 链接）
-4. 注意事项（站点适配问题 + 错误处理经验）
+按 `references/report-template.md` 格式生成报告，包含 3 个部分：
+
+1. **任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
+2. **匹配结果**：标题含搜索词的岗位 — 网站名称 + 岗位链接
+3. **不匹配结果**：无匹配的站点 — 网站名称 + 检索状态 + 说明 + 网站链接
+
+> **链接规则**：
+> - 匹配成功 → 返回**岗位详情页链接**
+> - 搜索失败/跳过/无匹配 → 返回**网站原始 URL**
+> - 空结果（搜索成功但 0 条匹配）→ 直接跳过，不尝试兜底策略
 
 ---
 
@@ -161,18 +183,22 @@ browser-use doctor  # 验证
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 browser-use doctor  # 快速检查，~2s
+
+# 确认 browser-use 版本（v3.0+ 使用 Python pipe 语法）
+browser-use doctor 2>&1 | grep version
 ```
 
 ---
 
 ## 五、核心规则
 
-1. **始终用 `browser-use open <url>`**（headless 模式，0 交互）。**禁止**用 `browser-use connect`。
-2. **始终用 CLI 命令**（`browser-use input`、`browser-use click`、`browser-use state`）而非 Python harness 函数。
-3. **交互前先运行 `browser-use state`** 获取元素索引。
-4. **用 `browser-use state` 替代截图**进行页面分析。
-5. **合并 JS 查询**——用单次 `browser-use eval` 提取所有需要的数据。
-6. **只看第一页结果**——搜索后不滚动、不分页，只提取当前可见的第一页职位。
+1. **始终使用 browser-use v3.0 语法**：`browser-use <<'PY' ... PY'` Python pipe 模式。**禁止**使用已废弃的 `browser-use open/state/click/input/close` 子命令。
+2. **核心 API**：`new_tab(url)` 打开页面、`page_info()` 获取页面信息、`js(code)` 执行 JS 与提取数据、`fill_input(selector, text)` 填表、`capture_screenshot(path)` 截图、`wait_for_load()` 等待加载。
+3. **搜索步骤强制执行**：对每个站点，必须按 3a→3b→**3c(MODE)**→**3d(搜索)**→3e(结果)→3f(提取)→3g(筛选) 完整流程执行，**不可跳过 3d 搜索步骤**。
+4. **只取第一页**：搜索后不滚动、不分页，只提取当前可见的第一页职位。
+5. **空结果直接跳过**：搜索后若匹配数为 0，直接记录状态并进入下一个站点，**不尝试** URL 参数、分页、滚动加载等兜底策略。
+6. **合并 JS 查询**：用单次 `js()` 提取所有需要的数据，减少交互轮次。
+7. **会话清理**：全部站点处理完毕后，用 `browser-use --reload` 关闭浏览器守护进程。
 
 ---
 
@@ -212,17 +238,30 @@ browser-use doctor  # 确认安装正常
 #### 3a. 打开页面
 
 ```bash
-browser-use open "$URL"
-browser-use state  # 获取页面元素索引
+browser-use <<'PY'
+new_tab("$URL")
+info = page_info()
+print(f"Title: {info.get('title', '')}")
+PY
 ```
 
-#### 3b. 获取页面元素索引
+> 如果页面跳转（重定向），以最终 URL 和标题为准。
 
-`browser-use state` 返回所有可交互元素及其索引号，用于后续 `click`/`input` 命令。
+#### 3b. 等待加载并获取页面结构
+
+```bash
+browser-use <<'PY'
+wait_for_load()
+# 确认页面已加载 → 检查文本长度 > 200 字符
+text = js("document.body.innerText")
+print(f"Page text length: {len(text)}")
+print(text[:2000])
+PY
+```
+
+> 如果页面文本长度 < 200，可能需要额外等待或页面加载失败，记录为"页面加载失败"。
 
 #### 3c. 处理招聘项目复选框（根据 MODE）
-
-**此步骤是核心步骤**——不同用户需求不同（校招/实习），必须根据 MODE 参数找到并勾选对应的复选框。
 
 **MODE=3（不勾选）**：跳过此步骤，直接到 3d。
 
@@ -234,115 +273,168 @@ browser-use state  # 获取页面元素索引
 # MODE=2 时，URL 含 /intern/ 或 /practice/ → 已满足，跳过
 ```
 
-**优先级 2：用 state 输出查找复选框**
+**优先级 2：用 JS 查找复选框并点击**
+
 ```bash
-# state 输出中查找含以下关键词的可点击元素：
-# MODE=1: "校招" "校园招聘" "全职" "正式" "秋招" "春招" "社招"
-# MODE=2: "实习" "日常实习" "暑假" "暑期" "日常"
-# 找到后用索引号点击：
-browser-use click <index>
-browser-use state  # 验证勾选状态
+browser-use <<'PY'
+# MODE=1: 查找含 "校招" "校园招聘" "全职" "正式" 的复选框/标签并点击
+# MODE=2: 查找含 "实习" "日常实习" "暑假" 的复选框/标签并点击
+js("""
+(function() {
+    let keywords = MODE==1 ? ['校招','校园招聘','全职','正式','秋招','春招','社招'] : ['实习','日常实习','暑假','暑期','日常'];
+    let all = document.querySelectorAll('input[type="checkbox"], label, span, a, button, div');
+    for (let el of all) {
+        let t = el.textContent.trim();
+        for (let kw of keywords) {
+            if (t.includes(kw) && t.length < 30 && el.offsetParent !== null) {
+                el.click();
+                return JSON.stringify({clicked: true, text: t, tag: el.tagName});
+            }
+        }
+    }
+    return JSON.stringify({clicked: false});
+})()
+""")
+PY
 ```
 
-**优先级 3：用 eval 查找自定义复选框**
+> 不同网站的复选框实现方式不同，详见 `references/site-patterns.md`。如果 MODE 对应的招聘类型在页面上完全找不到，记录到注意事项并继续搜索。
 
-不同网站使用不同的复选框实现方式，详见 `references/site-patterns.md`：
+#### 3d. ⭐ 搜索（强制执行，不可跳过）
+
+**此步骤必须执行，无论页面默认列表是否已显示目标关键词。**
 
 ```bash
-# 飞书招聘 (jobs.feishu.cn): atsx-tree-checkbox 类
-# MODE=1: 找"校园招聘"/"校招招聘"对应的复选框
-browser-use eval "JSON.stringify([...document.querySelectorAll('.atsx-tree-checkbox')].map((el,i)=>({i,text:el.parentElement?.parentElement?.textContent?.trim()?.substring(0,20)||'',checked:el.className.includes('checked')})))"
-# 找到目标索引后点击
-browser-use eval "document.querySelectorAll('.atsx-tree-checkbox')[<target_index>].click()"
+browser-use <<'PY'
+# Step 1: 定位搜索输入框
+# 用 JS 查找 placeholder 含"搜索"/"职位"/"岗位"/"search" 的 input 元素
+search_input = js("""
+(function() {
+    let inputs = document.querySelectorAll('input');
+    for (let inp of inputs) {
+        let ph = (inp.placeholder || '').toLowerCase();
+        if (ph.includes('搜索') || ph.includes('职位') || ph.includes('岗位') || ph.includes('search')) {
+            return JSON.stringify({id: inp.id, name: inp.name, placeholder: inp.placeholder, className: inp.className?.substring(0,50)});
+        }
+    }
+    return 'null';
+})()
+""")
+print(f"Search input: {search_input}")
+
+# Step 2: 填入关键词并触发搜索
+if search_input != 'null':
+    import json
+    inp = json.loads(search_input)
+    selector = f"#{inp['id']}" if inp.get('id') else f"input[placeholder='{inp['placeholder']}']"
+    fill_input(selector, "$KEYWORD")
+    
+    # 点击搜索按钮
+    js("""
+    (function() {
+        let btns = document.querySelectorAll('button');
+        for (let btn of btns) {
+            let t = btn.textContent.trim();
+            if ((t === '搜索' || t.includes('搜索') || t.includes('Search')) && btn.offsetParent !== null) {
+                btn.click();
+                return 'clicked';
+            }
+        }
+        // 备选：按回车触发搜索
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}));
+        return 'enter';
+    })()
+    """)
+else:
+    print("WARNING: No search input found on page — recording as search failure")
+PY
 ```
 
-**优先级 4：导航标签替代复选框**
+**如果找不到搜索框**：记录该站点为"搜索失败"（状态=搜索框未找到），跳过该站点。
 
-部分网站用导航标签（如"校园招聘"/"社会招聘"/"实习生招聘"）而非复选框。用 state 找到对应标签文本的元素索引并点击。
+> **禁止跳过此步骤**。即使页面默认列表已经显示了目标关键词，也必须走搜索流程，因为：
+> 1. 部分 SPA 网站默认列表是精选子集，不展示全部岗位（如拼多多校招站）
+> 2. 搜索是唯一能确保结果完整性的操作
+> 3. 可复现、可验证
 
-> 如果 MODE 对应的招聘类型在页面上完全找不到（既无复选框也无导航标签也无 URL 路径暗示），记录到注意事项并继续搜索。
-
-#### 3d. 输入搜索词并搜索
+#### 3e. 等待搜索完成
 
 ```bash
-# 1. 从 state 输出找到搜索输入框索引
-#    查找 placeholder 含"搜索"/"职位"/"岗位"/"search" 的 input 元素
-# 2. 输入搜索词
-browser-use input <search_input_index> "$KEYWORD"
-# 3. 点击搜索按钮
-#    从 state 输出查找含"搜索"/"查询"/"search" 的 button 元素
-browser-use click <search_button_index>
-# 4. 验证搜索结果
-browser-use state
+browser-use <<'PY'
+wait_for_load()
+js("new Promise(r => setTimeout(r, 3000))")
+# 验证搜索结果已加载
+text = js("document.body.innerText")
+print(f"After search, page text length: {len(text)}")
+PY
 ```
 
-**备选方案：如果点击搜索按钮未触发过滤**
-```bash
-# 方案A：用 URL 参数直接搜索
-browser-use open "${BASE_URL}?keyword=$KEYWORD"
-# 方案B：在搜索框聚焦后按回车
-browser-use click <search_input_index>
-browser-use type "$KEYWORD"
-browser-use keys "Enter"
-# 方案C：触发表单 submit 事件
-browser-use eval "document.querySelector('form')?.requestSubmit()"
-```
+#### 3f. 提取搜索结果中的职位链接
 
-#### 3e. 获取第一页结果
-
-**只看第一页，不滚动、不分页。** 搜索完成后等待结果加载：
+用单次 `js()` 一次性提取第一页所有职位的标题和链接：
 
 ```bash
-browser-use wait text "职位" --timeout 5000  # 等待结果区域出现
-browser-use state  # 确认结果已加载
-```
-
-#### 3f. 提取职位标题和链接
-
-用单次 `browser-use eval` 一次性提取第一页所有职位的标题和链接：
-
-```bash
-# 通用提取脚本（适配多种网站结构）
-browser-use eval "JSON.stringify([...document.querySelectorAll('a')].filter(a=>{const t=a.textContent.trim();const h=a.href||'';return t.length>2&&t.length<200&&(h.includes('position')||h.includes('job')||h.includes('detail')||a.closest('[class*=JobTitle],[class*=job-title],[class*=position]'))}).map(a=>({title:a.textContent.trim(),link:a.href})))"
+browser-use <<'PY'
+result = js("""
+JSON.stringify([...document.querySelectorAll('a')].filter(a => {
+    const t = a.textContent.trim();
+    const h = a.href || '';
+    return t.length > 2 && t.length < 200 && 
+           (h.includes('position') || h.includes('job') || h.includes('detail') || h.includes('recruit') ||
+            a.closest('[class*=JobTitle],[class*=job-title],[class*=position],[class*=job-item]'));
+}).map(a => ({title: a.textContent.trim(), link: a.href})))
+""")
+print(f"Extracted links: {result[:2000]}")
+PY
 ```
 
 > 不同网站的职位链接选择器可能不同，详见 `references/site-patterns.md` 中的站点适配表。如果通用脚本提取不到结果，改用站点专用选择器。
 
-#### 3g. 按标题子串筛选
+#### 3g. 按标题子串筛选并记录结果
 
 在提取的 JSON 结果中，检查每个职位标题是否包含搜索词作为**连续子串**：
 
-```bash
-# 在 eval 中直接 filter
-browser-use eval "JSON.stringify({matched:[...document.querySelectorAll('a')].filter(a=>a.textContent.includes('$KEYWORD')).map(a=>({title:a.textContent.trim(),link:a.href})),unmatched:[...document.querySelectorAll('a')].filter(a=>{const t=a.textContent.trim();return t.length>2&&t.length<200&&!t.includes('$KEYWORD')&&(a.href.includes('position')||a.href.includes('detail'))}).map(a=>({title:a.textContent.trim(),link:a.href}))})"
-```
+- **匹配**（标题含搜索词）→ 记录：企业名 + 岗位链接
+- **不匹配**（标题不含搜索词）→ 记录：企业名 + 检索状态 + 说明 + 网站链接
+- **空结果**（0 条匹配）→ 直接跳过，**不尝试兜底策略**（不翻页、不换搜索方式）
 
-将结果按 `企业名` 分组暂存。
+将结果按企业名分组暂存。
+
+---
 
 ### Step 4: 关闭浏览器
 
 ```bash
-browser-use close
+# browser-use v3.0: 用 --reload 重启守���进程来关闭浏览器
+browser-use --reload
+# 同时清理可能残留的 Chrome 进程
+pkill -9 -f "Google Chrome" 2>/dev/null
 ```
+
+---
 
 ### Step 5: 生成精炼报告
 
-按 `references/report-template.md` 格式生成报告，包含 4 个部分：
+按 `references/report-template.md` 格式生成报告，包含 3 个部分：
 
 1. **任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
-2. **标题含搜索词的岗位表**：企业名 | 职位标题 | 链接
-3. **标题不含搜索词的岗位表**：企业名 | 职位标题 | 链接
-4. **注意事项**：站点适配问题 + 错误处理经验（供下次执行参考）
+2. **匹配结果**：网站名称 + 岗位链接
+3. **不匹配结果**：网站名称 + 检索状态 + 说明 + 网站链接
+
+**链接规则**：
+- 匹配成功 → 使用**岗位详情页链接**
+- 搜索失败/跳过/无匹配 → 使用**网站原始 URL**
 
 ---
 
 ## 七、站点适配快速参考
 
-| 站点类型 | 复选框定位 | 搜索框定位 | 职位链接选择器 |
-|---------|-----------|-----------|--------------|
-| 飞书招聘 (jobs.feishu.cn) | `.atsx-tree-checkbox` + 邻近文本 | `input[placeholder*="搜索"]` | `a[href*="position"]` |
-| INTSIG (intsig.zhiye.com) | URL 路径含 `/campus/` 即满足 | `input[placeholder*="搜索"]` | `[class*="JobTitle"]` + `a` |
-| 通用 | `input[type="checkbox"]` + label | `input[type="text/search"]` | `a[href*="position/job/detail"]` |
+| 站点类型 | 搜索框定位 | 搜索触发方式 | 职位链接选择器 | 特殊行为 |
+|---------|-----------|-------------|--------------|---------|
+| 飞书招聘 (jobs.feishu.cn) | `input[placeholder*="搜索"]` | 点击搜索按钮 | `a[href*="position/detail"]` | 搜索正常 |
+| INTSIG (intsig.zhiye.com) | `input[placeholder*="搜索"]` | fill + Enter 或 button | `[class*="JobTitle"]` + `a` | 搜索按钮可能不触发 |
+| **拼多多校招 (careers.pddglobalhr.com)** | `input#name`（placeholder="搜索职位名称"） | `.page-job-list_searchButton__bYEas` 按钮 | `.page-job-list_jobList__UqU9K` 内 `a` 标签 | ⚠️ 默认列表不展示全部岗位，**必须搜索** |
+| 通用 | `input[type="text/search"]` | fill + Enter | `a[href*="position/job/detail"]` | — |
 
 详见 `references/site-patterns.md`。
 
@@ -356,36 +448,40 @@ browser-use close
 |------|------|---------|
 | `browser-use: command not found` | 未安装或 PATH 未设置 | `export PATH="$HOME/.local/bin:$PATH"` 然后 `uv tool install browser-use` |
 | Python 版本过低 | 系统 Python < 3.11 | 用 `uv tool install`（自动安装 Python 3.13），**不要**用 `pip3 install` |
+| browser-use v2 vs v3 语法不兼容 | 旧技能使用 `browser-use open/state/close` 等已废弃命令 | 本技能 v4.0 已全部适配 v3.0 `<<'PY'` 语法，不要混用旧命令 |
 
 ### 浏览器问题
 
 | 问题 | 原因 | 解决方案 |
 |------|------|---------|
-| 页面打不开 | session 异常 | `browser-use close` 然后重试 |
-| 元素找不到 | 页面未加载完 | `browser-use wait text "xxx" --timeout 10000` |
-| 搜索未过滤 | JS 框架事件不兼容 | 用 URL 参数 `?keyword=xxx` 或 `requestSubmit()` |
+| Chrome 弹出 "Allow remote debugging?" | macOS 首次远程调试需授权 | 在弹窗点击 Allow；或预先用 `open -a "Google Chrome" --args --remote-debugging-port=9222 '--remote-allow-origins=*'` 启动 |
+| zsh 报 `no matches found` | `--remote-allow-origins=*` 的 `*` 被 zsh 通配符展开 | 使用单引号包裹：`'--remote-allow-origins=*'` |
+| 浏览器会话残留 | 上次 `--reload` 未执行 | 执行 `browser-use --reload` 后 `pkill -9 -f "Google Chrome"` |
+| 页面打不开 | session 异常 | `browser-use --reload` 然后重试 |
+| 搜索未触发过滤 | JS 框架事件不兼容 | 用 `fill_input` + JS `requestSubmit()` 或键盘事件 `Enter` |
 
 ### 数据提取问题
 
 | 问题 | 原因 | 解决方案 |
 |------|------|---------|
-| 职位链接提取不到 | 选择器不匹配 | 用 `browser-use get html` 查看结构，调整选择器 |
-| 标题和链接不匹配 | DOM 层级复杂 | 用 `a.closest('[class*=JobTitle]')` 或反向 `titleEl.closest('a')` |
-| 链接不完整（相对路径） | 网站用相对 URL | 用 `new URL(link, location.origin).href` 补全 |
+| 职位链接提取不到 | 选择器不匹配 | 参考 `references/site-patterns.md` 站点专用选择器 |
+| 默认列表不包含目标岗位 | SPA 站点分页/懒加载 | **必须走搜索步骤（3d）**，不依赖默认列表 |
+| 搜索后结果为空 | 该站点确实无相关岗位 | 直接记录"搜索成功，无匹配"，跳过该站点，不尝试兜底 |
 
 ### 搜索词匹配规则
 
-- **匹配条件**：搜索词是职位标题的**连续子串**（如 "前端" 匹配 "前端开发工程师"，不匹配 "前后端工程师"）
+- **匹配条件**：搜索词是职位标题的**连续子串**（如 "前端" 匹配 "前端开发工程师" 和 "Web前端研发工程师"）
 - **大小写**：JS 的 `String.includes()` 区分大小写，中文无此问题，英文关键词需注意
 - **只看第一页**：不滚动加载更多，不分页检查，只提取搜索后当前可见的职位
+- **空结果处理**：直接跳过，不尝试 URL 参数、分页、滚动加载等兜底策略
 
 ---
 
 ## 九、优化数据
 
-| 指标 | 无技能 | 使用本技能 |
-|------|--------|-----------|
-| 步骤数 | 57 | 12-15（视站点数） |
-| 耗时 | ~34 min | ~5-8 min |
-| Token | ~45K | ~8-12K |
-| 用户交互 | 3 | 0（参数齐全时）/ 1-2（需补充参数时） |
+| 指标 | 无技能 | 使用本技能（v3.0） | v4.0 提升 |
+|------|--------|-----------|----------|
+| 步骤数 | 57 | 12-15（视站点数） | 更少（强制搜索减少遗漏） |
+| 漏检率 | 高 | 中（依赖默认列表） | 低（强制搜索确保完整性） |
+| Token | ~45K | ~8-12K | 更少（空结果不兜底） |
+| 用户交互 | 3 | 0-2 | 0-2（原子模式触发更准） |
