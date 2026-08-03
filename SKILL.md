@@ -3,18 +3,14 @@ name: targeted-url-search
 description: "Automated job search on recruitment websites with dual-mode trigger. Workflow mode: triggered by 'targeted-url-search', batch-searches URLs from previous node. Atomic mode: triggered by 'search specific content on specific website' semantics. Validates required inputs (URL+keyword) before execution."
 version: 4.0.0
 allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep, AskUserQuestion
-display_name: "招聘网站自动化搜索"
-display_name_en: "Job Site Auto Search"
-description_zh: "两种触发模式：工作流模式（提及targeted-url-search，对上一节点输出网站批量检索）和原子模式（在特定网站检索特定内容语义）。自动校验必填参数（URL+关键词），强制搜索（不可跳过）→ 第一页结果筛选 → 空结果直接跳过（不兜底）→ 按格式输出报告"
-description_en: "Two trigger modes: workflow (mention targeted-url-search, batch search from previous node output) and atomic (search specific content on specific website). Validates required inputs, mandatory search step, filter first page, skip empty results (no fallback), structured report."
 visibility: "public"
 agent_created: true
 ---
 # 招聘网站自动化岗位搜索
 
-两种触发模式 + 必填参数校验 + **强制搜索** + 空结果直接跳过 → 输出精炼报告。
+两种触发模式 + 必填参数校验 + 自动执行：打开网站 → 勾选招聘项目复选框 → 搜索关键词 → 从第一页结果中筛选标题含搜索词的岗位链接 → 输出精炼报告
 
-> **v4.0 重大变更**：
+注意：
 > - 所有浏览器命令升级为 **browser-use v3.0** Python pipe 语法（`browser-use <<'PY'...PY'`）
 > - 搜索步骤改为**强制执行**，不可跳过（即使页面默认列表已含目标岗位也必须走搜索流程）
 > - 搜索结果为空 → **直接跳过**，不尝试兜底策略（URL 参数、分页等）
@@ -27,50 +23,15 @@ agent_created: true
 
 本技能有两种触发模式，根据用户提示词自动判断。
 
-### 模式一：工作流模式
-
-| 项目 | 说明 |
-|------|------|
-| **触发条件** | 用户明确提及 "targeted-url-search" |
-| **适用场景** | 上一个节点已输出网站列表（如从智能表格筛选出的企业投递链接 JSON），需要对这些网站进行批量检索 |
-| **URL 来源** | 上一节点输出的 JSON 文件（含企业名和投递链接） |
-
-### 模式二：原子模式
-
-| 项目 | 说明 |
-|------|------|
-| **触发条件** | 用户提示词包含"在特定网站检索特定内容"语义 |
-| **适用场景** | 用户直接提供待检索网站 URL，不依赖上一节点输出 |
-| **URL 来源** | 用户直接输入 |
-
-**原子模式触发词（增强版）**：
-
-| 语义模式 | 示例 |
-|---------|------|
-| "在...网站/中/上用...检索/搜索..." | "在 https://xxx.com 中用'前端'关键词检索" |
-| "在...网站/中/上检索/搜索..." | "在拼多多校招网站上搜索前端岗位" |
-| "...里有没有/是否有...岗位" | "帮我看这个链接里有没有算法岗" |
-| "帮我看...链接...有没有/检索..." | "帮我看 https://xxx.com 检索前端" |
-| "打开...网址...搜索/检索..." | "打开 https://xxx.com 搜索后端" |
-| "...网站...找...职位/岗位" | "这个招聘网站帮我找产品经理职位" |
-
-> **触发判断优先级**：如果用户同时满足两种条件，优先判定为**工作流模式**。
->
-> **触发词模式详见** `references/mode-detection.md`。
+- 工作流模式触发条件：用户明确提及 "targeted-url-search"。
+- 原子模式触发条件：用户提示词包含"在特定网站检索特定内容"语义。
+- 若两种模式都被触发，工作流模式优先级高于原子模式。
 
 ---
 
 ## 二、前置步骤：输入收集与校验
 
-### Step 0a: 检测触发模式
-
-检查用户提示词：
-
-- 提示词包含 "targeted-url-search" → **工作流模式**，进入 Step 0b（工作流）
-- 提示词包含上述原子模式触发词 → **原子模式**，进入 Step 0b（原子）
-- 两者都不匹配 → **不触发本技能**
-
-### Step 0b: 从用户提示词中提取输入数据
+### Step 0a: 从用户提示词中提取输入数据
 
 首先尝试从用户**当前提示词**中直接提取数据，避免不必要的二次询问。
 
