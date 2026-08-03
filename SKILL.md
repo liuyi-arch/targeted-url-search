@@ -1,5 +1,5 @@
 ---
-name: browser-use-job-search
+name: targeted-url-search
 description: "Automated job search on recruitment websites. Input: JSON file (urls+companies), search keyword, recruitment mode (1=campus, 2=intern, 3=none). Output: concise report of matching/non-matching job links."
 version: 2.0.0
 allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep
