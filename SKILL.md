@@ -1,5 +1,5 @@
 ---
-name: browser-use-job-search
+name: targeted-url-search
 description: "Automated job search on recruitment websites with dual-mode trigger. Workflow mode: triggered by 'targeted-url-search', batch-searches URLs from previous node. Atomic mode: triggered by 'search specific content on specific website' semantics. Validates required inputs (URL+keyword) before execution."
 version: 3.0.0
 allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep, AskUserQuestion
@@ -7,7 +7,7 @@ display_name: "招聘网站自动化搜索"
 display_name_en: "Job Site Auto Search"
 description_zh: "两种触发模式：工作流模式（提及targeted-url-search，对上一节点输出网站批量检索）和原子模式（在特定网站检索特定内容语义）。自动校验必填参数（URL+关键词），收集补充信息后执行：打开网站→勾选复选框→搜索关键词→第一页结果筛选→输出报告"
 description_en: "Two trigger modes: workflow (mention targeted-url-search, batch search from previous node output) and atomic (search specific content on specific website). Validates required inputs, collects supplementary info, executes: open→check→search→filter first page→report"
-visibility: "private"
+visibility: "public"
 agent_created: true
 ---
 
