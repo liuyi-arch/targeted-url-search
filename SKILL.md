@@ -1,96 +1,201 @@
 ---
-name: targeted-url-search
-description: "Automated job search on recruitment websites with dual-mode trigger. Workflow mode: triggered by 'targeted-url-search', batch-searches URLs from previous node. Atomic mode: triggered by 'search specific content on specific website' semantics. Validates required inputs (URL+keyword) before execution."
-version: 5.0.0
+name: targeted-url-search-pro
+description: "招聘网站自动化岗位搜索。工作流模式：由'targeted-url-search'触发，从上一节点JSON批量检索；原子模式：由'在特定网站搜索特定内容'语义触发。自动打开网站→勾选招聘项目→搜索关键词→从第一页结果筛选标题含关键词的岗位链接→输出报告。"
+version: 1.0.0
 allowed-tools: Bash(browser-use:*), Read, Write, Glob, Grep, AskUserQuestion
-visibility: "public"
 agent_created: true
 ---
+
 # 招聘网站自动化岗位搜索
-
-两种触发模式 + 必填参数校验 + 自动执行：打开网站 → 勾选招聘项目复选框 → 搜索关键词 → 从第一页结果中筛选标题含搜索词的岗位链接 → 输出精炼报告。
-
-> **设计原则**：本文件仅包含核心编排逻辑（做什么）。详细实现（怎么做）见 `references/` 目录下各专题文件。
-
----
 
 ## 一、触发模式
 
 | 模式 | 触发条件 | URL 来源 |
 |------|---------|---------|
-| 工作流 | 用户提及 "targeted-url-search" | 上一节点 JSON 文件 |
-| 原子 | 用户提示词含"在特定网站检索特定内容"语义 | 用户直接输入 |
+| 工作流 | 提示词含 `targeted-url-search` | 上一节点 JSON 文件 |
+| 原子 | 提示词含"在…网站/链接…搜索/检索…岗位/关键词"语义 | 用户直接输入 |
 
-> 两种模式同时匹配时，工作流优先。详细触发词与提取规则见 `references/mode-detection.md`。
+> 两种同时匹配时，工作流优先。
 
 ---
 
 ## 二、输入参数
 
-| 参数 | 变量名 | 必填 | 说明 |
-|------|--------|------|------|
-| URL 列表 | `URL_LIST` | 是 | 工作流：JSON 提取；原子：用户输入 |
-| 企业名列表 | `COMPANY_LIST` | 否 | 工作流：JSON 提取；原子：从域名推断 |
-| 搜索关键词 | `KEYWORD` | 是 | 如"前端"、"算法" |
-| 招聘项目模式 | `MODE` | 否 | 1=校招/全职, 2=实习, 3=不勾选(默认) |
-| 触发模式 | `TRIGGER_MODE` | — | "workflow" 或 "atomic" |
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| URL_LIST | 是 | 工作流：从 JSON `records[].投递链接` 提取；原子：用户输入 |
+| COMPANY_LIST | 否 | 工作流：从 JSON `records[].招聘企业` 提取；原子：从域名推断 |
+| KEYWORD | 是 | 搜索关键词，如"前端"、"算法" |
+| MODE | 否 | 1=校招/全职, 2=实习, 3=不勾选(默认) |
+| EXCLUDE_INDICES | 否 | 工作流模式：用户指定跳过的站点序号 |
 
-> 必填字段缺失时按模式重新询问，直到校验通过或用户取消。详见 `references/execution-flow.md` Step 0。
+### MODE 判定
 
----
+| 补充信息关键词 | MODE |
+|--------------|------|
+| 校招、全职、正式、秋招、春招、社招 | 1 |
+| 实习、日常、暑假、暑期 | 2 |
+| 未提及 | 3 |
 
-## 三、核心规则
+### 输入校验
 
-1. **browser-use v3.0 语法**：统一用 `browser-use <<'PY' ... PY'` Python pipe 模式。禁止 `browser-use open/state/click/input/close` 等废弃子命令。
-2. **核心 API**：`new_tab(url)`、`page_info()`、`js(code)`、`fill_input(selector, text)`、`capture_screenshot(path)`、`wait_for_load()`。
-3. **搜索强制执行**：每个站点必须完整走 3a→3b→3c(MODE)→**3d(搜索)**→3e→3f→3g，不可跳过 3d。
-4. **只取第一页**：搜索后不滚动、不分页。
-5. **空结果直接跳过**：搜索后 0 条匹配 → 记录状态并进入下一站点，不尝试兜底策略。
-6. **合并 JS 查询**：用单次 `js()` 提取所有数据，减少交互轮次。
-7. **会话清理**：全部站点处理完毕后执行 `browser-use --reload` + `pkill Chrome`。
+必填字段缺失时：工作流模式用 `AskUserQuestion` 询问"全量检索/选择性检索"后补全；原子模式直接提示用户输入 URL + KEYWORD。循环直到校验通过或用户取消。
 
 ---
 
-## 四、执行流程概览
+## 三、执行流程
 
-| Step | 动作 | 详情参考 |
-|------|------|---------|
-| 0 | 输入收集与校验 | `references/execution-flow.md` § Step 0 |
-| 1 | 构建 URL 列表 | `references/execution-flow.md` § Step 1 |
-| 2 | 环境检查 | `references/execution-flow.md` § Step 2 |
-| 3 | 逐站点处理 (3a-3g) | `references/execution-flow.md` § Step 3 |
-| 4 | 关闭浏览器 | `references/execution-flow.md` § Step 4 |
-| 5 | 生成报告 | `references/report-template.md` |
+### 前置：环境检查
 
-**Step 3 子步骤摘要**：
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+browser-use doctor  # 确认 browser-use 正常
+```
 
-| 子步骤 | 动作 |
-|--------|------|
-| 3a | 打开页面 (`new_tab`) |
-| 3b | 等待加载，获取页面结构 |
-| 3c | 处理招聘项目复选框 (MODE=3 时跳过) |
-| 3d | ⭐ 搜索（强制执行，不可跳过） |
-| 3e | 等待搜索完成 |
-| 3f | 提取职位链接 |
-| 3g | 按标题子串筛选并记录结果 |
+### Step 1：构建 URL 列表
 
-> 站点专用选择器见 `references/site-patterns.md`。错误排查见 `references/error-handling.md`。
+- **工作流**：读取 JSON 文件，用 `jq -r '.records[] | "\(.招聘企业)\t\(.投递链接)"'` 提取，按 `EXCLUDE_INDICES` 跳过对应行。
+- **原子**：用户提供的 URL 列表即 `URL_LIST`。
+
+### Step 2：逐站点处理（3a–3g）
+
+对每个 URL 执行以下子步骤，全部通过 `browser-use <<'PY' ... PY` Python pipe 模式调用。
+
+**3a. 打开页面**
+
+```python
+new_tab("$URL")
+info = page_info()
+print(f"Title: {info.get('title', '')}")
+```
+
+**3b. 等待加载**
+
+```python
+wait_for_load()
+text = js("document.body.innerText")
+# 文本长度 < 200 → 可能加载失败
+```
+
+**3c. 处理招聘项目复选框**（MODE=3 跳过）
+
+先检查 URL 是否已暗示类型（`/campus/` `/intern/` 等），已满足则跳过。否则用 JS 查找并点击含目标关键词的复选框/标签：
+
+```javascript
+(function() {
+    let kws = MODE==1 ? ['校招','校园招聘','全职','正式','秋招','春招','社招']
+                       : ['实习','日常实习','暑假','暑期','日常'];
+    let els = document.querySelectorAll('input[type="checkbox"], label, span, a, button, div');
+    for (let el of els) {
+        let t = el.textContent.trim();
+        for (let kw of kws) {
+            if (t.includes(kw) && t.length < 30 && el.offsetParent !== null) {
+                el.click();
+                return JSON.stringify({clicked: true, text: t});
+            }
+        }
+    }
+    return JSON.stringify({clicked: false});
+})()
+```
+
+找不到时记录并继续搜索。
+
+**3d. ⭐ 搜索（强制执行，不可跳过）**
+
+```python
+# 定位搜索框
+search_input = js("""
+(function() {
+    let inputs = document.querySelectorAll('input');
+    for (let inp of inputs) {
+        let ph = (inp.placeholder || '').toLowerCase();
+        if (ph.includes('搜索')||ph.includes('职位')||ph.includes('岗位')||ph.includes('search'))
+            return JSON.stringify({id: inp.id, name: inp.name, placeholder: inp.placeholder});
+    }
+    return 'null';
+})()
+""")
+# 填入关键词并触发搜索
+if search_input != 'null':
+    inp = json.loads(search_input)
+    selector = f"#{inp['id']}" if inp.get('id') else f"input[placeholder='{inp['placeholder']}']"
+    fill_input(selector, "$KEYWORD")
+    js("""(function() {
+        let btns = document.querySelectorAll('button');
+        for (let b of btns) {
+            let t = b.textContent.trim();
+            if ((t==='搜索'||t.includes('搜索')||t.includes('Search')) && b.offsetParent!==null) { b.click(); return 'clicked'; }
+        }
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true}));
+        return 'enter';
+    })()""")
+```
+
+> 找不到搜索框 → 记录"搜索框未找到"，跳过该站点。
+
+**3e. 等待搜索完成**
+
+```python
+wait_for_load()
+js("new Promise(r => setTimeout(r, 3000))")
+```
+
+**3f. 提取职位链接**（只取第一页，不滚动不分页）
+
+```javascript
+JSON.stringify([...document.querySelectorAll('a')].filter(a => {
+    const t = a.textContent.trim();
+    const h = a.href || '';
+    return t.length > 2 && t.length < 200 &&
+           (h.includes('position')||h.includes('job')||h.includes('detail')||h.includes('recruit') ||
+            a.closest('[class*=JobTitle],[class*=job-title],[class*=position],[class*=job-item]'));
+}).map(a => ({title: a.textContent.trim(), link: a.href})))
+```
+
+**3g. 筛选并记录**
+
+检查每个职位标题是否包含 KEYWORD 作为**连续子串**：
+
+| 情况 | 记录 |
+|------|------|
+| 标题含 KEYWORD | 企业名 + 岗位详情页链接 |
+| 标题不含 KEYWORD | 企业名 + 状态"搜索成功" + 说明 + 原始 URL |
+| 0 条结果 | 直接跳过，不兜底 |
+
+### Step 3：关闭浏览器
+
+```bash
+browser-use --reload
+pkill -9 -f "Google Chrome" 2>/dev/null
+```
 
 ---
 
-## 五、输出
+## 四、输出报告
 
-按 `references/report-template.md` 生成 3 段式报告：
+生成 Markdown 报告，保存到 `output/{KEYWORD}岗位检索报告.md`，包含 3 段：
 
-1. **任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
-2. **匹配结果**：网站名称 + 岗位详情页链接
-3. **不匹配结果**：网站名称 + 检索状态 + 说明 + 网站原始链接
+**1. 任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
 
-**链接规则**：匹配 → 岗位详情页 URL；不匹配/失败/跳过 → 网站原始 URL。
+**2. 匹配结果**（标题含 KEYWORD 的岗位）：
+
+| # | 网站 | 岗位链接 |
+|---|------|---------|
+| 1 | {企业名} | {岗位详情页 URL} |
+
+> 链接填岗位详情页 URL；无匹配显示"无匹配岗位"。
+
+**3. 不匹配结果**：
+
+| # | 网站 | 检索状态 | 说明 | 网站链接 |
+|---|------|---------|------|---------|
+
+> 检索状态：`搜索成功`(无匹配) / `搜索失败` / `搜索框未找到` / `页面加载失败` / `跳过`；链接填网站原始 URL。
 
 ---
 
-## 六、前提条件
+## 五、前提条件
 
 ```bash
 # 一次性安装
@@ -101,20 +206,4 @@ browser-use install
 browser-use doctor  # 验证
 ```
 
-每次运行前执行 `browser-use doctor` 快速检查。
-
----
-
-## 文件结构
-
-```
-targeted-url-search/
-├── SKILL.md                        # 本文件 — 核心编排（~150行）
-├── references/
-│   ├── mode-detection.md           # 触发词模式 + 输入提取规则
-│   ├── execution-flow.md           # 详细执行流程（Step 0-5 含代码）
-│   ├── site-patterns.md            # 站点适配表（飞书/INTSIG/拼多多/通用）
-│   ├── report-template.md          # 报告模板 + 字段说明 + 示例
-│   ├── error-handling.md           # 错误处理与故障排查
-│   └── changelog.md                # 版本变更记录
-```
+> **browser-use v3.0 语法**：统一用 `browser-use <<'PY' ... PY` Python pipe 模式。核心 API：`new_tab(url)`、`page_info()`、`js(code)`、`fill_input(selector, text)`、`wait_for_load()`、`capture_screenshot(path)`。
