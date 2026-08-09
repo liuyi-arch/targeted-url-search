@@ -48,8 +48,12 @@ agent_created: true
 ### 前置：环境检查
 
 ```bash
+pkill -9 -f "Google Chrome" # 杀掉可能残留的 Chrome 进程（避免旧连接干扰）
+
+open -a "Google Chrome" --args --remote-debugging-port=9222 # 用远程调试端口启动 Chrome
+
 export PATH="$HOME/.local/bin:$PATH"
-browser-use doctor  # 确认 browser-use 正常
+browser-use doctor # 验证 browser-use 连接
 ```
 
 ### Step 1：构建 URL 列表
@@ -64,7 +68,7 @@ browser-use doctor  # 确认 browser-use 正常
 **3a. 打开页面**
 
 ```python
-new_tab("$URL")
+goto_url("$URL")          # 在当前标签页直接导航，复用同一 tab
 info = page_info()
 print(f"Title: {info.get('title', '')}")
 ```
@@ -162,6 +166,7 @@ JSON.stringify([...document.querySelectorAll('a')].filter(a => {
 | 标题含 KEYWORD | 企业名 + 岗位详情页链接 |
 | 标题不含 KEYWORD | 企业名 + 状态"搜索成功" + 说明 + 原始 URL |
 | 0 条结果 | 直接跳过，不兜底 |
+
 
 ### Step 3：关闭浏览器
 
