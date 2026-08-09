@@ -33,7 +33,7 @@ agent_created: true
 
 | 补充信息关键词 | MODE |
 |--------------|------|
-| 校招、全职、正式、秋招、春招、社招 | 1 |
+| 校招、全职、正式、秋招、春招、社招、应届 | 1 |
 | 实习、日常、暑假、暑期 | 2 |
 | 未提及 | 3 |
 
@@ -48,7 +48,8 @@ agent_created: true
 ### 前置：环境检查
 
 ```bash
-pkill -9 -f "Google Chrome" # 杀掉可能残留的 Chrome 进程（避免旧连接干扰）
+pkill -9 -f "remote-debugging-port=9222" # 只清理调试实例：精确匹配调试端口参数，避免误杀用户日常 Chrome
+sleep 1
 
 open -a "Google Chrome" --args --remote-debugging-port=9222 # 用远程调试端口启动 Chrome
 
@@ -81,14 +82,14 @@ text = js("document.body.innerText")
 # 文本长度 < 200 → 可能加载失败
 ```
 
-**3c. 处理招聘项目复选框**（MODE=3 跳过）
+**3c. 处理招聘项目复选框/**（MODE=3 跳过）
 
 先检查 URL 是否已暗示类型（`/campus/` `/intern/` 等），已满足则跳过。否则用 JS 查找并点击含目标关键词的复选框/标签：
 
 ```javascript
 (function() {
-    let kws = MODE==1 ? ['校招','校园招聘','全职','正式','秋招','春招','社招']
-                       : ['实习','日常实习','暑假','暑期','日常'];
+    let kws = MODE==1 ? ['校招','校园','全职','正式','秋招','春招']
+                       : ['实习','暑假','暑期','日常'];
     let els = document.querySelectorAll('input[type="checkbox"], label, span, a, button, div');
     for (let el of els) {
         let t = el.textContent.trim();
@@ -166,14 +167,6 @@ JSON.stringify([...document.querySelectorAll('a')].filter(a => {
 | 标题含 KEYWORD | 企业名 + 岗位详情页链接 |
 | 标题不含 KEYWORD | 企业名 + 状态"搜索成功" + 说明 + 原始 URL |
 | 0 条结果 | 直接跳过，不兜底 |
-
-
-### Step 3：关闭浏览器
-
-```bash
-browser-use --reload
-pkill -9 -f "Google Chrome" 2>/dev/null
-```
 
 ---
 
