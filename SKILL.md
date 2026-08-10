@@ -26,7 +26,7 @@ agent_created: true
 | URL_LIST | 是 | 工作流：从 JSON `records[].投递链接` 提取；原子：用户输入 |
 | COMPANY_LIST | 否 | 工作流：从 JSON `records[].招聘企业` 提取；原子：从域名推断 |
 | KEYWORD | 是 | 搜索关键词，如"前端"、"算法" |
-| MODE | 否 | 1=校招/全职, 2=实习, 3=不勾选(默认) |
+| MODE | 否 | 1=校招/全职, 2=实习, 3=校招+实习(默认) |
 | EXCLUDE_INDICES | 否 | 工作流模式：用户指定跳过的站点序号 |
 
 ### MODE 判定
@@ -82,14 +82,101 @@ text = js("document.body.innerText")
 # 文本长度 < 200 → 可能加载失败
 ```
 
-**3c. 处理招聘项目复选框/**（MODE=3 跳过）
+**3c_1. 导航至目标招聘类型 Tab**
 
-先检查 URL 是否已暗示类型（`/campus/` `/intern/` 等），已满足则跳过。否则用 JS 查找并点击含目标关键词的复选框/标签：
+检查页面头部导航栏，根据 MODE 导航到对应语义的 Tab。Tab 导航优先于复选框（定位更可靠：文本短且独特、可见性好、点击副作用明显）。
+
+| MODE | 优先导航 Tab 语义关键词 | 
+|------|----------------------|
+| 1 | 应届招聘 / 校园招聘 / 校招岗位 / 校招 / 应届 | 
+| 2 | 实习招聘 / 实习生 / 实习 → 未找到则回退到 MODE=1 关键词（报告标注对应原因） | 
+| 3 | 先导航 MODE=1 关键词 Tab → 执行 3c_2~3g → 再导航 MODE=2 关键词 Tab → 再执行 3c_2~3g | 
+
+> **未找到MODE对应语义Tab**：导航至「岗位/职位」语义 Tab -> 若「岗位/职位」语义 Tab也未找到，允许大模型执行最多3个自助动作 -> 若仍未达成，跳过 3c_1（报告标注对应原因）。
+
+Tab 查找与点击 JS：
 
 ```javascript
 (function() {
-    let kws = MODE==1 ? ['校招','校园','全职','正式','秋招','春招']
-                       : ['实习','暑假','暑期','日常'];
+    // MODE→目标 Tab 关键词映射（MODE=3 此处先取校招类，实习类在第二轮处理）
+    let kwMap = {
+        1: ['应届招聘','校园招聘','校招岗位','校招','应届'],
+        2: ['实习招聘','实习生','实习'],
+        3: ['应届招聘','校园招聘','校招岗位','校招','应届']
+    };
+    let kws = kwMap[MODE] || kwMap[1];
+    let fallbackKws = ['岗位','职位','Jobs','Positions'];
+
+    // 优先在导航栏区域查找（header/nav/菜单/Tab容器）
+    let navSel = 'header, nav, [class*=nav], [class*=menu], [class*=header], [class*=tab]';
+    let navAreas = document.querySelectorAll(navSel);
+    let searchAreas = navAreas.length > 0 ? navAreas : [document.body];
+
+    // 第一轮：目标语义 Tab
+    for (let area of searchAreas) {
+        for (let el of area.querySelectorAll('a, button, li, span, div[role="tab"]')) {
+            let t = el.textContent.trim();
+            for (let kw of kws) {
+                if (t.includes(kw) && t.length < 20 && el.offsetParent !== null) {
+                    el.click();
+                    return JSON.stringify({clicked: true, text: t, kw: kw, fallback: false});
+                }
+            }
+        }
+    }
+
+    // 第二轮回退：「岗位/职位」语义 Tab
+    for (let area of searchAreas) {
+        for (let el of area.querySelectorAll('a, button, li, span, div[role="tab"]')) {
+            let t = el.textContent.trim();
+            for (let kw of fallbackKws) {
+                if (t.includes(kw) && t.length < 20 && el.offsetParent !== null) {
+                    el.click();
+                    return JSON.stringify({clicked: true, text: t, kw: kw, fallback: true});
+                }
+            }
+        }
+    }
+
+    return JSON.stringify({clicked: false});
+})()
+```
+
+导航后验证（URL 变化或 DOM 内容变化即视为成功）：
+
+```python
+import time
+url_before = page_info().get('url', '')
+text_before = js("document.body.innerText")[:200]
+# ↑ 执行上面的 Tab 点击 JS ↓
+time.sleep(3); wait_for_load()
+url_after = page_info().get('url', '')
+text_after = js("document.body.innerText")[:200]
+tab_navigated = (url_before != url_after) or (text_before != text_after)
+```
+
+> **MODE=3 特殊流程**：3c_1 第一轮导航到校招类 Tab 后，依次执行 3c_2→3d→3e→3f→3g；然后回到 3c_1 第二轮导航到实习类 Tab，再次执行 3c_2→3d→3e→3f→3g。两轮结果均记入报告。
+
+**3c_2. 处理招聘项目复选框**
+
+> **跳过条件**：若 3c_1 已成功导航进入「应届招聘/校园招聘/校招岗位」或「实习招聘」等语义 Tab，则 3c_2 **直接跳过**——Tab 导航已隐含招聘类型，无需再勾选复选框。
+
+3c_1 未成功导航到「应届招聘/校园招聘/校招岗位」或「实习招聘」等语义 Tab时，用 JS 查找并勾选含目标关键词的复选框/标签：
+
+| MODE | 勾选复选框语义关键词 |
+|------|-------------------|
+| 1 | 应届 / 校园 / 校招 / 正式 / 全职 / 春招 / 秋招 |
+| 2 | 实习 / 暑假 / 暑期 / 日常 |
+| 3 | 第一轮勾选 MODE=1 关键词 → 执行 3d~3g → 第二轮勾选 MODE=2 关键词 → 再执行 3d~3g |
+
+```javascript
+(function() {
+    let kwMap = {
+        1: ['应届','校园','校招','正式','全职','春招','秋招'],
+        2: ['实习','暑假','暑期','日常'],
+        3: ['应届','校园','校招','正式','全职','春招','秋招']  // MODE=3 第一轮先勾校招类
+    };
+    let kws = kwMap[MODE] || kwMap[1];
     let els = document.querySelectorAll('input[type="checkbox"], label, span, a, button, div');
     for (let el of els) {
         let t = el.textContent.trim();
@@ -104,7 +191,10 @@ text = js("document.body.innerText")
 })()
 ```
 
-找不到时记录并继续搜索。
+> **动作限制**：3c_2 中如果首次未找到复选框或未找到目标语义复选框（报告标注对应原因），允许大模型自主决策最多再执行 **3 个动作**（如查 `label[for]` 关联、扩大选择器到 `[class*=checkbox]` 等）。3 个动作后仍未达成，直接跳过 3c_2，进入 3d 搜索步骤。
+>
+> **MODE=3 特殊流程**：3c_2 第一轮勾选校招类复选框 → 执行 3d~3g → 取消勾选 → 第二轮勾选实习类复选框 → 再执行 3d~3g。若第二轮未找到实习类复选框，只保留第一轮结果。
+
 
 **3d. ⭐ 搜索（强制执行，不可跳过）**
 
@@ -121,23 +211,39 @@ search_input = js("""
     return 'null';
 })()
 """)
-# 填入关键词并触发搜索
-if search_input != 'null':
-    inp = json.loads(search_input)
-    selector = f"#{inp['id']}" if inp.get('id') else f"input[placeholder='{inp['placeholder']}']"
-    fill_input(selector, "$KEYWORD")
-    js("""(function() {
-        let btns = document.querySelectorAll('button');
-        for (let b of btns) {
-            let t = b.textContent.trim();
-            if ((t==='搜索'||t.includes('搜索')||t.includes('Search')) && b.offsetParent!==null) { b.click(); return 'clicked'; }
+# 填入关键词
+js(f"""
+    (function() {{
+        let inputs = document.querySelectorAll('input');
+        for (let inp of inputs) {{
+            let ph = (inp.placeholder||'').toLowerCase();
+            if (ph.includes('搜索')||ph.includes('职位')||ph.includes('岗位')||ph.includes('search')) {{
+                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+                setter.call(inp, '{KEYWORD}');
+                inp.dispatchEvent(new InputEvent('input',{{bubbles:true, inputType:'insertText', data:'{KEYWORD}'}}));
+                inp.dispatchEvent(new Event('change',{{bubbles:true}}));
+                inp.focus();
+                return;
+            }}
+        }}
+    }})()
+    """)
+    time.sleep(1)
+# 触发搜索
+js("""(function() {
+        let ae = document.activeElement;
+        if (ae && ae.tagName === 'INPUT') {
+            ae.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true}));
+            ae.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',keyCode:13,bubbles:true}));
+            return 'enter';
         }
-        document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true}));
-        return 'enter';
+        return 'no-input';
     })()""")
+    time.sleep(3)
+
 ```
 
-> 找不到搜索框 → 记录"搜索框未找到"，跳过该站点。
+> 以上定位搜索栏、填入关键词、触发搜索均只尝试一次，失败最多只允许ai自主决策执行3个动作，如果仍失败，直接跳过该站点，记录失败原因。
 
 **3e. 等待搜索完成**
 
