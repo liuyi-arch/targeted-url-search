@@ -66,7 +66,7 @@ browser-use doctor # 验证 browser-use 连接
 
 对每个 URL 执行以下子步骤，全部通过 `browser-use <<'PY' ... PY` Python pipe 模式调用。
 
-**3a. 打开页面**
+**3a. 打开页面（复用同一标签页）**
 
 ```python
 goto_url("$URL")          # 在当前标签页直接导航，复用同一 tab
@@ -74,15 +74,24 @@ info = page_info()
 print(f"Title: {info.get('title', '')}")
 ```
 
-**3b. 等待加载**
+**3b. 等待加载（判定加载失败直接跳过当前站点）**
 
 ```python
-wait_for_load()
-text = js("document.body.innerText")
-# 文本长度 < 200 → 可能加载失败
+import time
+time.sleep(3); wait_for_load()
+chk = js("JSON.stringify({url: location.href, len: document.body.innerText.length, title: document.title})")
+# 判定标准：
+#   1) location.href 为 about:blank 或 '' → 加载被拦截（常见于反爬/重定向，如 talent.baidu.com）→ 重试
+#   2) 文本长度 < 200 且标题不含站点名 → 可能仍在加载 → 再等 5s 复查一次
+#   3) 上述重试 1 次仍失败 → 判"页面加载失败(疑似反爬拦截/需人工验证)"，跳过该站点
+if 'about:blank' in chk or 'len":' in chk and int(chk.split('"len":')[1].split(',')[0]) < 200:
+    time.sleep(5)
+    chk2 = js("JSON.stringify({url: location.href, len: document.body.innerText.length})")
+    if 'about:blank' in chk2:
+        goto_url("$URL")   # 重试一次
+        time.sleep(5)
 ```
-
-**3c_1. 导航至目标招聘类型 Tab**
+**3c_1. 导航至目标招聘类型 Tab（含 hover 下拉展开）**
 
 检查页面头部导航栏，根据 MODE 导航到对应语义的 Tab。Tab 导航优先于复选框（定位更可靠：文本短且独特、可见性好、点击副作用明显）。
 
