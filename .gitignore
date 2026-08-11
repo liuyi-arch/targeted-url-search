@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 venv/
 *.log
+
+# skillhub 本地安装元数据(含本机路径,不公开)
+_skillhub_meta.json
