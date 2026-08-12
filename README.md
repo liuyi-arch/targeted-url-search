@@ -1,109 +1,20 @@
-# targeted-url-search-pro
+# 招聘网站自动化岗位搜索（targeted-url-search）
 
-> WorkBuddy Skill: 招聘网站自动化岗位搜索。基于 browser-use v3.0，双模式触发 + 输入校验 + 自动执行。**v2.0 分层架构**：经验外置、按需加载，支持 100+/500+ 站点教训持续沉淀而不膨胀。
+基于 browser-use 的招聘网站岗位自动搜索 Skill：给定企业官网招聘页 URL + 关键词，自动完成
+**打开页面 → 导航到目标招聘类型 Tab → 搜索关键词 → 提取匹配岗位链接** 的完整流程，并输出检索报告。
 
-## 功能概述
+## 架构（分层）
 
-给定 JSON 文件（工作流模式）或直接 URL（原子模式）、搜索关键词、可选招聘项目模式，自动完成：
+| 层级 | 位置 | 职责 |
+|---|---|---|
+| 编排层 | `targeted-url-search-skill.md` | 触发模式、输入参数、3a–3e 完整 workflow、判定标准、兜底逻辑、经验沉淀流程（执行时无需跳转） |
+| 经验层 | `references/patterns.md` | 特例层模式库（仅 S 类失败站点） |
+| 经验层 | `references/site-notes.md` | 单站点经验临时记录（S 类新站点） |
+| 动作层 | `scripts/*.py` | 一个动作一个文件；文件内多函数 = 不同实现方法 |
 
-1. **识别触发模式**（工作流 vs 原子）
-2. **收集与校验**必填输入（URL + 关键词）— 缺失时询问用户
-3. **模式识别**：查 `references/patterns.md` 索引 → 命中模式按模式应对；未命中走通用流程并事后沉淀
-4. 通过 browser-use v3.0 Python pipe 语法**复用同一标签页**逐站点打开招聘网站
-5. 导航对应招聘类型 Tab（hover 下拉 / antd 真实鼠标 / 降级链）
-6. 勾选招聘项目复选框（Tab 导航成功时跳过）
-7. 强制搜索关键词（iframe 兜底、提取默认列表兜底）
-8. 第一页三层提取岗位链接（兼容非 `<a>` 岗位；无匹配取前 3 兜底；登录墙标注）
-9. 输出 3 段式精炼报告（含降级/兜底/登录墙原因标注）
+设计原则：**方法层优先，特例层兜底**——M 类失败（方法不足）→ 动作文件加方法；S 类失败（站点走不通）→ 升级为 patterns 模式。
 
-## 架构（v2.0 分层）
-
-```
-targeted-url-search-pro/
-├── SKILL.md                    # 精简骨架：触发/参数/流程概述/模式路由/报告模板/经验沉淀SOP
-├── references/
-│   ├── patterns.md             # ⭐ 模式库（唯一模式增长点）：索引表 + 每类站点一个模式
-│   ├── workflow.md             # 3a–3g 详细步骤与代码模板（通用逻辑）
-│   └── site-notes.md           # 站点笔记（单站点经验，每站 ≤10 行）
-└── assets/scripts/             # 可复用脚本（参数化）
-    ├── antd_hover.py           # antd 菜单：CDP 真实鼠标展开 + data-menu-id 提取 URL + 真实点击
-    ├── fill_search.py          # 搜索框填入 + 触发 + 生效验证
-    └── extract_jobs.py         # 岗位三层提取 + 点击容器取 SPA URL + 统计读取
-```
-
-**设计原则**：
-- **模式抽象优先于站点枚举**：500 个网站教训归纳为 ~10 类模式（antd 菜单/zhiye 系/hover 下拉/登录墙/反爬/hotjob/飞书/自研/非a标签）。SKILL.md 只装"如何识别模式"，不装"如何处理每个站点"。
-- **按需加载**：每次执行只加载 SKILL.md（~150 行）+ 命中的 1 个模式文件（几十行）→ 上下文 O(1)，不随站点数增长。
-- **经验沉淀闭环**：跑完复盘 → 单站点经验进 site-notes.md；同坑 ≥2 次归纳为新模式进 patterns.md；SKILL.md 永不因此变大。
-- **代码与文档分离**：可复用脚本进 assets/scripts，workflow.md 只引用文件名。
-
-## 双模式触发
-
-| 模式 | 触发条件 | URL 来源 |
-|------|---------|---------|
-| 工作流 | 提示词含 `targeted-url-search` | 上一节点 JSON 文件 |
-| 原子 | 提示词含"在…网站/链接…搜索/检索…岗位/关键词"语义 | 用户直接输入 |
-
-## 输入参数
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| URL_LIST | 是 | 工作流：从 JSON `records[].投递链接` 提取；原子：用户输入 |
-| COMPANY_LIST | 否 | 工作流：从 JSON `records[].招聘企业` 提取；原子：从域名推断 |
-| KEYWORD | 是 | 搜索关键词，如"前端"、"算法" |
-| MODE | 否 | 1=校招/全职, 2=实习, 3=校招+实习(默认) |
-| EXCLUDE_INDICES | 否 | 工作流模式：用户指定跳过的站点序号 |
-
-## 执行流程
-
-### Step 0：环境检查 + 模式识别
-```bash
-pkill -9 -f "remote-debugging-port=9222"; sleep 1
-open -a "Google Chrome" --args --remote-debugging-port=9222
-export PATH="$HOME/.local/bin:$PATH"; browser-use doctor
-```
-读取 `references/patterns.md` 索引 → 按域名/URL/特征匹配模式；未命中走通用流程（workflow.md）并事后沉淀。
-
-### Step 1：构建 URL 列表
-- **工作流**：`jq -r '.records[] | "\(.招聘企业)\t\(.投递链接)"'` 提取，按 `EXCLUDE_INDICES` 跳过
-- **原子**：用户提供的 URL 列表即 `URL_LIST`
-
-### Step 2：逐站点处理（3a–3g）
-
-| 子步骤 | 动作 | 要点 |
-|--------|------|------|
-| 3a | 打开页面 | `goto_url` 复用当前标签页（勿用 new_tab） |
-| 3b | 等待加载 | URL 校验（about:blank=反爬→重试1次）+ 文本长度；失败→"页面加载失败(疑似反爬拦截)" |
-| 3c_1 | 导航招聘类型 Tab | 四类语义 Tab + 降级链；hover 下拉（普通 CSS 用 JS 事件，**antd 用 CDP 真实鼠标**）；导航后验证；自研站点 3 个自主动作 |
-| 3c_2 | 处理复选框 | Tab 导航成功则跳过；MODE=3 两轮勾选 |
-| 3d | ⭐ 搜索（强制） | 定位（iframe 兜底）→ native setter 填入 → 触发 → **验证生效**；失败→自主 5 个动作→提取默认列表并标注，**不跳过站点** |
-| 3e | 等待结果 | 轮询岗位容器出现（最多 ~10s） |
-| 3f | 提取岗位 | 三层提取（`<a>`→容器→点击容器取 SPA URL）；React 卡片 CDP 真实点击；登录墙→标注"详情需登录"；只取第一页 |
-| 3g | 筛选记录 | 标题含 KEYWORD→岗位链接；非空无匹配→**取前3兜底**；空→"无匹配岗位" |
-
-### Step 3：关闭浏览器
-```bash
-browser-use --reload
-pkill -9 -f "remote-debugging-port=9222" 2>/dev/null
-```
-
-## 输出报告
-
-生成 Markdown 报告，保存到 `output/{KEYWORD}岗位检索报告.md`，包含 3 段（任务参数 / 匹配结果 / 不匹配结果）。
-
-**检索状态枚举**：`匹配成功` / `无精确匹配(取前N岗位)` / `无匹配岗位` / `搜索失败` / `搜索框未找到` / `页面加载失败` / `详情需登录` / `跳过`
-
-## 经验沉淀 SOP（增长机制）
-
-| 情况 | 动作 |
-|------|------|
-| 命中模式但应对不够 | 改进 patterns.md 对应模式小节 |
-| 新站点、新坑 | 补一行到 site-notes.md（≤10 行） |
-| 同坑 ≥2 次 | 归纳为新模式进 patterns.md（10–30 行 + 索引行） |
-| 模式 ≥5 个互相独立 | patterns.md 可拆分为 patterns/ 子目录，索引表保持单一增长点 |
-| 新增可复用脚本 | 放 assets/scripts/，参数化，workflow.md 引用 |
-
-## 前提条件
+## 快速开始
 
 ```bash
 # 一次性安装
@@ -112,8 +23,41 @@ export PATH="$HOME/.local/bin:$PATH"
 uv tool install browser-use
 browser-use install
 browser-use doctor  # 验证
+
+# 每次执行前
+bash scripts/env_check.sh  # 清理调试实例 → 启动 Chrome(9222) → 验证连接
 ```
 
-## License
+## 使用方式
 
-MIT
+- **工作流模式**：提示词含 `targeted-url-search`，URL 来自上一节点 JSON `records[].投递链接`；
+- **原子模式**：用户直接提供 URL 列表 + KEYWORD。
+
+## 目录结构
+
+```
+targeted-url-search/
+├── targeted-url-search-skill.md   # 编排 + 核心 workflow
+├── README.md
+├── references/
+│   ├── patterns.md                # 特例层模式库（索引表 = 唯一增长点）
+│   └── site-notes.md              # 单站点经验
+└── scripts/                       # 一个动作一个文件
+    ├── env_check.sh               # Step 0 环境检查
+    ├── open_page.py / open_page_wait.py   # 3a 导航打开 / 慢加载复查
+    ├── find_tab.py / click_tab.py / nav_verified.py / url_changed.py   # 3b
+    ├── has_search_input.py / has_jobs.py / hover_expand.py             # 3b/3c
+    ├── fill_keyword.py / trigger_search.py / search_verified.py        # 3c
+    ├── wait_results.py            # 3d 等待岗位容器
+    └── extract_jobs.py            # 3d/3e 取标题 + 按 KEYWORD 提取链接
+```
+
+## 核心流程（3a–3e）
+
+1. **3a 打开页面**：goto_url 导航 → 正文 ≥ 200 且标题无错误特征才可用（SPA 慢加载走复查）。
+2. **3b 导航 Tab**：按 MODE 语义找/点目标招聘类型 Tab（校招/实习/通用/社招），含降级链。
+3. **3c 搜索**：定位搜索框 → 填入 KEYWORD → 触发 → 验证生效（URL 参数或统计变化）。
+4. **3d 取搜索结果**：等待岗位容器出现；空 → 结束站点标"没有相关岗位"；非空 → 取 ≤5 个职位标题。
+5. **3e 筛选记录**：KEYWORD 连续子串命中 → 提取命中职位链接；未命中 → 提取第一个职位链接。
+
+输出：`output/{KEYWORD}岗位检索报告.md`（任务参数 / 匹配结果 / 不匹配结果）。
