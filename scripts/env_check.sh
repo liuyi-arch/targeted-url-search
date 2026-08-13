@@ -1,34 +1,41 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-"""环境检查 + Chrome 调试实例启动（Step 0）。
-用法：bash scripts/env_check.sh
+# Step 0 环境检查：清端口占用 → 二进制启动 Chrome(9222, IPv4) → 轮询验证端口。
+# 注意：不用 open -a（Chrome 已运行时 --args 被忽略）；成功判定仅以 9222 /json/version 为准（pipe 模式自动连接）。
 
-要点：
-- pkill 只精确匹配调试端口参数，避免误杀用户日常 Chrome。
-- open -a 在 Chrome 已运行时 --args 会被忽略（端口不监听）→ 用二进制直接启动兜底。
-"""
+set -uo pipefail
 
-set -e
+CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+PORT=9222
+PROFILE="/tmp/chrome-debug-profile"
+LOG="/tmp/chrome-debug.log"
 
-# 1) 清理旧调试实例（只匹配调试端口，不误杀日常 Chrome）
-pkill -9 -f "remote-debugging-port=9222" 2>/dev/null || true
+# 1) 清空 9222 占用（按端口杀，彻底清理任何残留实例；9222 为调试专用端口，无日常 Chrome 误杀风险）
+lsof -ti :${PORT} | xargs kill -9 2>/dev/null || true
 sleep 1
 
-# 2) 优先用 open -a（macOS 常规方案）
-if ! open -a "Google Chrome" --args --remote-debugging-port=9222 2>/dev/null; then
-    echo "open -a 失败，改用二进制直接启动"
-fi
+# 2) 二进制启动：独立 profile 防冲突；--no-sandbox 必需（否则沙箱初始化失败）；强制 IPv4（否则只监听 [::1] 验证连不上）
+"${CHROME_BIN}" \
+  --remote-debugging-port=${PORT} \
+  --remote-debugging-address=127.0.0.1 \
+  --no-sandbox --disable-gpu --disable-dev-shm-usage \
+  --user-data-dir="${PROFILE}" \
+  about:blank > "${LOG}" 2>&1 &
 
-# 3) 验证端口是否监听；未监听则二进制启动（Chrome 已运行时 open 的 --args 被忽略）
-if ! lsof -i :9222 -sTCP:LISTEN >/dev/null 2>&1; then
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-      --remote-debugging-port=9222 \
-      --no-sandbox --disable-gpu --disable-dev-shm-usage \
-      --user-data-dir=/tmp/chrome-debug-profile \
-      about:blank > /tmp/chrome-debug.log 2>&1 &
-    sleep 2
-fi
+# 3) 轮询验证端口（冷启动可能 >2s，最多 15s）
+PORT_OK=0
+for i in $(seq 1 15); do
+    if curl -sf "http://127.0.0.1:${PORT}/json/version" | grep -q '"Browser"'; then
+        PORT_OK=1
+        break
+    fi
+    sleep 1
+done
 
-# 4) 验证 browser-use 连接
-export PATH="$HOME/.local/bin:$PATH"
-browser-use doctor
+if [ "${PORT_OK}" != "1" ]; then
+    echo "[FAIL] Chrome 调试端口 ${PORT} 未监听" >&2
+    echo "--- ${LOG} 尾部日志 ---" >&2
+    tail -5 "${LOG}" 2>/dev/null || true
+    exit 1
+fi
+echo "[ok] Chrome 调试端口 ${PORT} 已监听"

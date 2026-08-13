@@ -1,22 +1,33 @@
 # -*- coding: utf-8 -*-
 """3b 动作：验证导航结果（组合动作）。方法：
 
-- nav_verified()          —— 成功判定（意图充分条件）：URL 变化 且（搜索框 或 职位列表）
+- nav_verified()          —— 成功判定（意图充分条件）：URL 变化 且（搜索框 或 职位列表），且非宣传落地页
 - has_type_evidence()     —— M 类归因证据：页面是否含目标类型关键词（校招/实习/职位字样）
 
 子动作各自独立成文件（url_changed / has_search_input / has_jobs），便于单独复用。
 """
 
+import re
+
 from url_changed import url_changed
 from has_search_input import has_search_input
 from has_jobs import has_jobs
 
+# 宣传落地页特征：命中任一且页面无职位统计 → 判失败（汇川坑：点"校园招聘"Tab 进入招聘流程/宣讲计划落地页）
+LANDING_KW = ['招聘流程', '宣讲计划', '网申', '内推', '宣讲会', '招聘动态', '加入我们']
+JOB_STATS = r'(共\s*\d+\s*(个|条)|职位列表\s*\d+\s*个|全部校招职位\s*\(\d+\)|在招职位|已加载全部)'
+
 
 def nav_verified(js, before_url=None):
-    """成功判定：URL 变化（传入 before_url 时校验，否则仅非空）且 页面出现搜索框或职位列表。返回 bool。"""
+    """成功判定：URL 变化（传入 before_url 时校验，否则仅非空）且（搜索框 或 职位列表），且非宣传落地页。返回 bool。"""
     if before_url and not url_changed(js, before_url):
         return False
-    return has_search_input(js) or has_jobs(js)
+    if not (has_search_input(js) or has_jobs(js)):
+        return False
+    txt = js("document.body.innerText.slice(0, 2000)")
+    if not re.search(JOB_STATS, txt) and any(k in txt for k in LANDING_KW):
+        return False
+    return True
 
 
 def has_type_evidence(js, mode):

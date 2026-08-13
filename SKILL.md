@@ -44,11 +44,13 @@
 
 ## 三、执行流程（编排 + 核心 workflow）
 
-### Step 0：环境检查
+### Step 0 · 环境检查
 
-```bash
-bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听（macOS方案） → 验证端口是否监听 → 验证browser-use连接
-```
+> **意图**：Chrome 调试实例在 9222 监听、可被 browser-use 连接，不阻塞 3a–3e。
+> **成功判定**：`env_check.sh` 退出码 0 且输出 `[ok] Chrome 调试端口 9222 已监听`（curl `/json/version` 含 `"Browser"`）。
+> **失败归因**：端口有响应但验证未命中（如 IPv6 监听而 curl 用 127.0.0.1、轮询不足）→ **M 类**（加方法）；其余（无监听、启动失败、残留占端口）→ **S 类**（进特例层）。
+
+**执行链路**：`bash scripts/env_check.sh`：lsof 清 9222 → 二进制启动 Chrome(IPv4, --no-sandbox) → 轮询验证（最多 15s，失败 tail 日志并 exit 1），通过 → 进入 3a。
 
 ### Step 1 执行策略
 
@@ -77,18 +79,18 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 > **成功判定**（意图的充分条件）：正文 ≥ 200 且标题无错误特征 → 进入 3b。
 > **失败归因**：DOM 有内容但方法未命中（如等待/取标题时机不对）→ **M 类**（加方法）；无 DOM/空壳/错误页 → **S 类**（进特例层）。
 
-**执行链路**：导航打开 → 慢加载复查，成功判定通过 → 进入 3b：
+**执行链路**：导航打开（轮询就绪）→ 慢加载兜底（仅轮询超时后），成功判定通过 → 进入 3b：
 
-- **导航打开**：`open_page(goto_url, page_info, url)`（`scripts/open_page.py`）：goto_url 导航（不 new_tab）→ sleep 3s → 取标题。
+- **导航打开**：`open_page(goto_url, js, url)`（`scripts/open_page.py`）：goto_url 导航（不 new_tab）→ 轮询正文 ≥ 200（每 1s，最多 15s）→ 返回 (title, body_len)。
 
-- **慢加载复查**（仅正文 < 200 时）：`open_page_wait(js, wait_for_load)`（`scripts/open_page_wait.py`）：wait_for_load → 正文仍 < 200 → 再等 5s 复查。
+- **慢加载兜底**（仅轮询超时正文仍 < 200 时）：`open_page_wait(js, wait_for_load)`（`scripts/open_page_wait.py`）：wait_for_load → 再等 5s 复查 → 返回 bool 是否达标。
 
 
 #### 3b · 导航至目标招聘类型 Tab（含 hover 下拉展开）
 
 > **意图**：切换到**目标招聘类型（MODE）职位视图**，为 3c 搜索准备上下文（非介绍/落地页）。
-> **成功判定**（意图的充分条件）：`nav_verified(js, before_url)` 通过 = URL 变化 **且**（搜索框 或 职位列表出现）→ 已进入目标类型职位视图。
-> **失败归因**：视图存在但方法未命中（含类型关键词 / 有下拉结构但 hover 全失败 / 有列表或搜索框但切换未命中）→ **M 类**（加方法）；降级链走完仍无 Tab 且无类型切换机制 → **S 类**（进特例层）。
+> **成功判定**（意图的充分条件）：`nav_verified(js, before_url)` 通过 = URL 变化 **且**（搜索框 或 职位列表出现）。
+> **失败归因**：视图存在但方法未命中（含类型关键词 / 探测为下拉但 hover/提取 URL 失败 / 有列表或搜索框但切换未命中）→ **M 类**（加方法）；降级链走完仍无 Tab 且无类型切换机制 → **S 类**（进特例层）。
 
 **目标 Tab 分类**（按语义，不分先后）：
 
@@ -107,15 +109,16 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 | 2    | 类别二 → 类别一（结果说明"可能包含校招正式批次岗位"） → 类别三（结果说明"可能包含校招正式批次/社招批次岗位"） → 仍无 → 直接进入 3c 搜索，结果说明"不确定是否是实习批次岗位" |
 | 3    | 先按 MODE=1 走完 3b–3e，再按 MODE=2 走完 3b–3e         |
 
-**每级执行链**（找 tab → 点击 → 验证；失败进入降级链下一级，不执行该级后续操作）：
+**每级执行链**（找 tab → 探测有无下拉 → 按结果交互 → 验证；失败进入降级链下一级，不执行该级后续操作；成功进入执行链下一级）：
 
-1. **找 tab**：`scripts/find_tab.py` 的 `find_tab(js, mode)` 按 MODE 语义关键词找直接可见 Tab（返回 {found, text}）；未找到 → 进入降级链下一级。
-2. **点击 tab**：`scripts/click_tab.py` 的 `click_tab(js, text)` 用上一步返回的 text 点击。
-3. **验证**：`scripts/nav_verified.py` 的 `nav_verified(js, before_url)`（判定见上）成功 → 进入 3c；失败 → 下一步 hover；M 类归因用 `has_type_evidence(js, mode)`（是否含类型关键词，判断视图存在）。
-4. **hover 展开下拉**：`scripts/hover_expand.py`（多方法按序，任一成功 → 回到第 3 步验证）：
-   - **方法1** `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
-   - **方法2** `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（JS dispatchEvent 无效，须 CDP 真实鼠标，见 docstring）；
-5. **仍失败 → 进入降级链下一级**
+1. **找 tab**：`scripts/find_tab.py` 的 `find_tab(js, mode)` 按 MODE 语义关键词找直接可见 Tab（返回 {found, text}）。
+2. **探测有无下拉**：`scripts/tab_has_dropdown.py` 的 `tab_has_dropdown(js, text)` 返回 `{has_dropdown, menu_id}`：
+   - `has_dropdown=true` → 依次执行 `scripts/hover_expand.py`（多方法按序，任一成功 → 进入第 3 步验证）：
+     - **方法1** `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
+     - **方法2** `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用第 2 步返回的 menu_id，JS dispatchEvent 无效，须 CDP 真实鼠标）；
+   - `has_dropdown=false` → `scripts/click_tab.py` 的 `click_tab(js, text)` 直接点击。
+3. **验证**：`scripts/nav_verified.py` 的 `nav_verified(js, before_url)`成功 → 进入 3c；失败 → 进入降级链下一级。
+4. **仍失败 → 进入降级链下一级**
 
 ---
 
@@ -125,7 +128,7 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 > **成功判定**（意图的充分条件）：`search_verified(js)` 通过 = URL 含 KEYWORD 查询参数**或** 职位统计/列表切换为过滤后结果 → 已按 KEYWORD 过滤。
 > **失败归因**：搜索机制存在但方法未命中（页面有搜索入口但 定位/填入/触发/验证 任一失败）→ **M 类**（加方法）；搜索机制不存在（无搜索框/按钮/表单）→ **S 类**（进特例层）。
 
-**定位 → 填入 → 触发 → 验证生效**（四个动作各自独立成文件，多方法按序，任一成功 → 下一步）：
+**执行链路**：定位 → 填入 → 触发 → 验证生效（四个动作各自独立成文件，多方法按序，任一成功 → 下一步）：
 
 - **定位搜索框**：`scripts/has_search_input.py` 。
   - 方法1 `find_search_input(js)` 主文档定位（placeholder 含 搜索/职位/岗位）；
@@ -155,11 +158,11 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 > **成功判定**（意图的充分条件）：搜索结果非空 → 取到 ≤5 个职位标题 → 进入 3e。
 > **失败归因**：有岗位但标题提取方法未命中 → **M 类**（加方法）；搜索结果为空（无任何岗位）→ 结束该站点，标注"没有相关岗位"。
 
-先轮询等待岗位容器出现：`wait_jobs(js, wait_for_load)`（`[class*=job-title],[class*=JobTitle],[class*=position],[class*=job-item],[class*=post]`，最多 ~10s）。
+先轮询等待岗位容器出现：`scripts/wait_results.py`的`wait_jobs(js, wait_for_load)`（`[class*=job-title],[class*=JobTitle],[class*=position],[class*=job-item],[class*=post]`，最多 ~10s）。
 
 再判断搜索结果：
 - **空** → 结束该站点，标注"没有相关岗位"；
-- **非空** → `get_job_titles(js, limit=5)` 取最多 5 个职位标题。
+- **非空** → `scripts/extract_titles.py` 的 `get_job_titles(js, limit=5)` 取最多 5 个职位标题。
 
 ---
 
@@ -169,7 +172,7 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 > **成功判定**（意图的充分条件）：产出 ≥1 个岗位链接（命中职位的链接，或未命中时第一个职位的链接）→ 记录。
 > **失败归因**：标题已取到但链接提取方法未命中 → **M 类**（加方法）。
 
-对 3d 取的职位标题判定（`match_titles(titles, keyword)`：连续子串）后，调用 `extract_matched_links(js, cdp, titles, keyword)` 提取：
+对 3d 取的职位标题判定（`scripts/match_links.py` 的 `match_titles(titles, keyword)`：连续子串）后，调用 `extract_matched_links(js, cdp, titles, keyword)` 提取：
 - **有连续子串命中** → 提取**命中职位**的岗位链接；
 - **无连续子串命中** → 函数兜底提取**第一个职位**的岗位链接，标注"无精确匹配，取第 1 个岗位"；
 
@@ -181,22 +184,23 @@ bash scripts/env_check.sh   # 清理调试实例 → 启动 Chrome(9222)监听�
 
 **1. 任务参数**：触发模式、勾选模式、搜索词、URL 来源、站点数
 
-**2. 匹配结果**（标题含 KEYWORD / 无精确匹配取第 1 个兜底）：
+**2. 匹配结果**（匹配类型三种：精准连续子串 / 降级 / 兜底）：
 
-| # | 网站 | 岗位链接 |
-| - | --- | ---- |
-| 1 | {企业名} | {岗位详情页 URL} |
+| # | 网站 | 匹配类型 | 岗位链接 |
+| - | --- | ---- | ---- |
+| 1 | {企业名} | {精准连续子串 / 降级 / 兜底} | {岗位详情页 URL} |
 
-> 链接填岗位详情页 URL。
+> 匹配类型枚举：`精准连续子串`（标题含 KEYWORD 连续子串）/ `降级`（降级链后匹配成功，如校招→通用 Tab）/ `兜底`（无精确匹配，取第 1 个岗位）。
+> 链接填岗位详情页 URL；降级/兜底须在说明中写明原因。
 
-**3. 不匹配结果**：
+**3. 不匹配结果**（状态两类：执行失败 / 搜索结果为空）：
 
-| # | 网站 | 检索状态 | 说明 | 网站链接 |
+| # | 网站 | 状态 | 说明 | 网站链接 |
 | - | --- | ---- | --- | ---- |
-| 1 | {企业名} | {状态} | {降级/兜底/失败原因} | {原始 URL} |
+| 1 | {企业名} | {执行失败 / 搜索结果为空} | {失败环节或空结果说明} | {原始 URL} |
 
-> 检索状态枚举：`匹配成功` / `无精确匹配(取第1岗位)` / `没有相关岗位` /`页面打开异常`/`页面加载失败`/`导航目标tab失败`/ `搜索失败` / `岗位链接提取失败` / `其他`。
-> 任何方案降级都必须在"说明"列写明原因，方便人工复核。
+> 状态枚举：`执行失败`（页面打开异常/加载失败/导航目标tab失败/搜索失败/岗位链接提取失败/其他——说明列写具体失败环节）/ `搜索结果为空`（无任何岗位）。
+> 任何降级/兜底/失败都必须在"说明"列写明原因，方便人工复核。
 
 ---
 
@@ -243,12 +247,13 @@ browser-use doctor  # 验证
 
 | 脚本                    | 步骤   | 核心函数                                                                          |
 | --------------------- | ---- | ----------------------------------------------------------------------------- |
-| `env_check.sh`        | Step 0 | 环境检查（清理→启动 Chrome→doctor）                                                     |
-| `open_page.py`        | 3a    | `open_page(goto_url, page_info, url)`（导航打开）                            |
-| `open_page_wait.py`   | 3a    | `open_page_wait(js, wait_for_load)`（SPA 慢加载复查）                        |
+| `env_check.sh`        | Step 0 | 环境检查（清理→二进制启动 Chrome(IPv4)→轮询验证端口）                             |
+| `open_page.py`        | 3a    | `open_page(goto_url, js, url)`（导航 + 轮询就绪）                            |
+| `open_page_wait.py`   | 3a    | `open_page_wait(js, wait_for_load)`（SPA 极慢加载兜底）                        |
 | `find_tab.py`         | 3b    | `find_tab(js, mode)`                                                          |
+| `tab_has_dropdown.py` | 3b    | `tab_has_dropdown(js, text)` → {has_dropdown, menu_id}（探测有无下拉）      |
 | `click_tab.py`        | 3b    | `click_tab(js, text)`                                                         |
-| `nav_verified.py`     | 3b    | `nav_verified(js, before_url)`（组合 url_changed/has_*）/ `has_type_evidence(js, mode)` |
+| `nav_verified.py`     | 3b    | `nav_verified(js, before_url)`（组合 url_changed/has_*，排除宣传落地页）/ `has_type_evidence(js, mode)` |
 | `url_changed.py`      | 3b    | `url_changed(js, before_url)`                                                 |
 | `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_search_input(js)` / `find_in_iframe(js)`      |
 | `has_jobs.py`         | 3b    | `has_jobs(js)`                                                                |
@@ -257,4 +262,6 @@ browser-use doctor  # 验证
 | `trigger_search.py`   | 3c    | `trigger_enter(js)` / `click_search_btn(js)`                                  |
 | `search_verified.py`  | 3c    | `url_has_query(js)` / `stats_changed(js)` / `search_verified(js)`             |
 | `wait_results.py`     | 3d    | `wait_jobs(js, wait_for_load)`                                                |
-| `extract_jobs.py`     | 3d/3e | `get_job_titles` / `match_titles` / `extract_matched_links`（底层 `extract_a_links` / `extract_container_titles` / `extract_by_click`） |
+| `extract_titles.py`   | 3d    | `get_job_titles`（底层 `extract_container_titles`；空则 `extract_a_links` 兜底） |
+| `extract_links.py`    | 3e    | 底层方法：`extract_a_links` / `extract_by_click` / `extract_via_fiber_onclick` |
+| `match_links.py`      | 3e    | 判定 + 编排：`match_titles` / `extract_matched_links`（依赖 extract_links 底层方法） |

@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
-"""3a 第一步：goto_url 导航打开页面并取状态。用法：browser-use <<'PY' ... PY 中调用。
+"""3a 第一步：导航 + 轮询等待页面就绪并取状态。用法：browser-use <<'PY' ... PY 中调用。
 
-职责边界：本文件只负责"导航 + 取页面状态"，成败判定在流程内完成
-（意图=页面可进入后续流程：正文 ≥ 200 + 标题无错误特征）；正文 < 200（SPA 慢加载）→ 由 open_page_wait.py 复查。
-"""
+职责边界：本文件只负责"导航 + 轮询就绪 + 取状态"；成败判定在流程内完成（正文 ≥ 200 + 标题无错误特征）。
+轮询超时正文仍 < 200（SPA 极慢加载）→ 由 open_page_wait.py 兜底。"""
 
 import time
 
 
-def open_page(goto_url, page_info, url, sleep_s=3.0):
-    """goto_url 在当前标签页导航（站点间不 new_tab，100+ 站点内存爆炸），sleep 后取标题确认。返回 page_info() 结果。"""
+def open_page(goto_url, js, url, min_len=200, timeout=15, sleep_s=1.0):
+    """goto_url 导航（不 new_tab），轮询正文 ≥ min_len（每 sleep_s 查一次，最多 timeout s）。返回 (title, body_len)。"""
     goto_url(url)
-    time.sleep(sleep_s)
-    info = page_info()
-    print(f"Title: {info.get('title', '')}")
-    return info
+    title, length = "", 0
+    for _ in range(int(timeout / sleep_s)):
+        title = js("document.title")
+        length = int(js("(document.body && document.body.innerText.length) || 0") or 0)
+        if length >= min_len:
+            break
+        time.sleep(sleep_s)
+    print(f"Title: {title} | BodyLen: {length}")
+    return title, length
