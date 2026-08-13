@@ -76,20 +76,20 @@
 #### 3a · 打开页面并确认可用
 
 > **意图**：页面可进入后续流程（非白屏/空壳 DOM/错误页）。
-> **成功判定**（意图的充分条件）：正文 ≥ 200 且标题无错误特征 → 进入 3b。
+> **成功判定**（意图的充分条件）：正文 ≥ 40 且标题无错误特征 → 进入 3b。
 > **失败归因**：DOM 有内容但方法未命中（如等待/取标题时机不对）→ **M 类**（加方法）；无 DOM/空壳/错误页 → **S 类**（进特例层）。
 
 **执行链路**：导航打开（轮询就绪）→ 慢加载兜底（仅轮询超时后），成功判定通过 → 进入 3b：
 
-- **导航打开**：`open_page(goto_url, js, url)`（`scripts/open_page.py`）：goto_url 导航（不 new_tab）→ 轮询正文 ≥ 200（每 1s，最多 15s）→ 返回 (title, body_len)。
+- **导航打开**：`open_page(goto_url, js, url)`（`scripts/open_page.py`）：goto_url 导航（不 new_tab）→ 轮询正文 ≥ 40（每 1s，最多 15s）→ 返回 (title, body_len)。
 
-- **慢加载兜底**（仅轮询超时正文仍 < 200 时）：`open_page_wait(js, wait_for_load)`（`scripts/open_page_wait.py`）：wait_for_load → 再等 5s 复查 → 返回 bool 是否达标。
+- **慢加载兜底**（仅轮询超时正文仍 < 40 时）：`open_page_wait(js, wait_for_load)`（`scripts/open_page_wait.py`）：wait_for_load → 再等 5s 复查 → 返回 bool 是否达标。
 
 
 #### 3b · 导航至目标招聘类型 Tab（含 hover 下拉展开）
 
 > **意图**：切换到**目标招聘类型（MODE）职位视图**，为 3c 搜索准备上下文（非介绍/落地页）。
-> **成功判定**（意图的充分条件）：`nav_verified(js, before_url)` 通过 = URL 变化 **且**（搜索框 或 职位列表出现）。
+> **成功判定**（意图的充分条件）：`nav_verified(js, before_url)` 通过 = **URL 变化 且（搜索框 或 职位列表出现）**，**或 初始即目标态**（URL 未变但页面打开已含职位列表+搜索框）。
 > **失败归因**：视图存在但方法未命中（含类型关键词 / 探测为下拉但 hover/提取 URL 失败 / 有列表或搜索框但切换未命中）→ **M 类**（加方法）；降级链走完仍无 Tab 且无类型切换机制 → **S 类**（进特例层）。
 
 **目标 Tab 分类**（按语义，不分先后）：
@@ -130,18 +130,20 @@
 
 **执行链路**：定位 → 填入 → 触发 → 验证生效（四个动作各自独立成文件，多方法按序，任一成功 → 下一步）：
 
-- **定位搜索框**：`scripts/has_search_input.py` 。
-  - 方法1 `find_search_input(js)` 主文档定位（placeholder 含 搜索/职位/岗位）；
-  - 方法2 `find_in_iframe(js)` iframe 兜底（跨源跳过）；
+- **定位搜索框**：`scripts/has_search_input.py`（多方法按命中率排序）。
+  - 方法1 `find_visible_search_input(js)`（最稳）：只返回**可见**搜索框（过滤 `offsetParent!==null && rect.width>0`）——适配 italent/zhiye 系与美团"两个同名输入框、第一个隐藏 rect 0,0"坑；
+  - 方法2 `find_search_input(js)` 主文档定位（placeholder 含 搜索/职位/岗位，不保证可见）；
+  - 方法3 `find_in_iframe(js)` iframe 兜底（跨源跳过）；
   - 均找不到 → 终止当前站点，标注"搜索框未找到"。
 
 - **填入**：`scripts/fill_keyword.py` 。
-  - 方法1`fill_keyword(js, keyword)` ， native setter + InputEvent（`fill_input` 对受控组件无效，禁用）；
+  - 方法1`fill_keyword(js, keyword)` ， native setter + InputEvent（`fill_input` 对受控组件无效，禁用），填入后主动 `focus()` 保持焦点；
   - 失败 → 结束该站点，标注"填入关键词失败"。
 
 - **触发**：`scripts/trigger_search.py` 。
   - 方法1 `trigger_enter(js)` 派发回车（React onSubmit）；
   - 方法2 `click_search_btn(js)` 点搜索按钮（onClick 不触发 onSubmit，按钮兜底）；
+  - 方法3 `click_btn_by_selector(js, selector)` 按 CSS 选择器 JS click 指定按钮；
   - 均失败 → 结束该站点，标注"搜索未触发"。
 
 - **验证生效**：`scripts/search_verified.py` 。
@@ -175,6 +177,15 @@
 对 3d 取的职位标题判定（`scripts/match_links.py` 的 `match_titles(titles, keyword)`：连续子串）后，调用 `extract_matched_links(js, cdp, titles, keyword)` 提取：
 - **有连续子串命中** → 提取**命中职位**的岗位链接；
 - **无连续子串命中** → 函数兜底提取**第一个职位**的岗位链接，标注"无精确匹配，取第 1 个岗位"；
+
+**提取链接的底层方法（`scripts/extract_links.py`，按命中率排序，任一成功即停止）**：
+- `extract_a_links`（最稳）：`<a>` 链接提取（常规）
+- `extract_ancestor_a`：卡片本身无 `<a>`，取祖先 `<a>` 的 href（metaAPP `[data-test=positionItem]` → `/position/{id}/detail?share_token=...`）
+- `extract_via_attr`：卡片为 div 带 data- 属性（美团 `.position_list_item` 的 `data-jobunionid`）→ 读属性 + URL 模板拼接
+- `extract_by_click`：JS click 跳转取 URL（SPA 路由跳转场景）
+- `extract_via_detail_btn`：SPA 内嵌详情面板：点卡片展开面板 → 点"查看详情"按钮 → 重写 window.open 捕获 `/campus/detail?jobAdId={uuid}`
+- `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接
+- `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转（网易）→ 重写 window.open + 触发 fiber onClick 捕获
 
 ---
 
@@ -255,13 +266,13 @@ browser-use doctor  # 验证
 | `click_tab.py`        | 3b    | `click_tab(js, text)`                                                         |
 | `nav_verified.py`     | 3b    | `nav_verified(js, before_url)`（组合 url_changed/has_*，排除宣传落地页）/ `has_type_evidence(js, mode)` |
 | `url_changed.py`      | 3b    | `url_changed(js, before_url)`                                                 |
-| `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_search_input(js)` / `find_in_iframe(js)`      |
+| `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_search_input(js)` / `find_in_iframe(js)` / `find_visible_search_input(js)`（可见性过滤，推荐） |
 | `has_jobs.py`         | 3b    | `has_jobs(js)`                                                                |
 | `hover_expand.py`     | 3b/3d | `hover_expand_css` / `hover_expand_antd` / `click_dropdown_item` / `real_click`（含 antd 辅助） |
 | `fill_keyword.py`     | 3c    | `fill_keyword(js, keyword)`（建议 native setter，禁用 fill_input）             |
-| `trigger_search.py`   | 3c    | `trigger_enter(js)` / `click_search_btn(js)`                                  |
-| `search_verified.py`  | 3c    | `url_has_query(js)` / `stats_changed(js)` / `search_verified(js)`             |
+| `trigger_search.py`   | 3c    | `trigger_enter(js)` / `click_search_btn(js)` / `click_btn_by_selector(js, selector)`（JS click 指定按钮） |
+| `search_verified.py`  | 3c    | `url_has_query(js)`（含 keywords=） / `stats_changed(js)`（排除固有文案假阳性） / `search_verified(js)` |
 | `wait_results.py`     | 3d    | `wait_jobs(js, wait_for_load)`                                                |
 | `extract_titles.py`   | 3d    | `get_job_titles`（底层 `extract_container_titles`；空则 `extract_a_links` 兜底） |
-| `extract_links.py`    | 3e    | 底层方法：`extract_a_links` / `extract_by_click` / `extract_via_fiber_onclick` |
+| `extract_links.py`    | 3e    | 底层方法：`extract_a_links` / `extract_by_click` / `extract_via_fiber_onclick` / `extract_ancestor_a` / `extract_via_attr` / `extract_via_detail_btn` / `extract_via_api` |
 | `match_links.py`      | 3e    | 判定 + 编排：`match_titles` / `extract_matched_links`（依赖 extract_links 底层方法） |
