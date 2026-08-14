@@ -82,6 +82,8 @@
 - 解法：Chrome 参数含 `--disable-blink-features=AutomationControlled` + CDP createTarget 打开 + target_id 定向
 - 坑点2：搜索须 CDP 真实输入+回车（163→5 条，URL 不变）；卡片 `[class*=post-item]` 无 `<a>` 且 JS click 无效 → CDP 真实点击 + 重写 window.open
 - 坑点3（输入实测）：搜索框非受控 → `activateTarget + attach session + Input.insertText("前端")` 直接生效；"百度一下"按钮 `BUTTON.search-btn__2OnYA` ~(915,446)，CDP 点击后搜索生效；结果标题 get_job_titles 直接可取（`[class*=post]` 命中 post-item）
+- **坑点4（switch_tab 禁用，对照实验验证）**：百度**必须禁用 `switch_tab`**——其 set_session/mark_tab（🐴 title 前缀）会干扰 Input.insertText（value 不进）且 title 修改触发反自动化导航（`Inspected target navigated`）；正确流程：`Target.createTarget` 打开 → `Target.activateTarget` + `sleep 1.5` → attach 拿 sid → **js 全程 target_id 定向** → insertText 一次成功
+- **坑点5（反自动化机制细节，探索实验）**：① **title 监控**：手动改 title ~2s 被还原为"百度校园招聘"（非 reload，SPA 内部重置）；② **switch_tab 触发更强防御**：mark_tab 的 🐴 title 不会被还原（反而被弄成"🐴"），随后 insertText 全部失效（active/非 active session 均无效），重新 activate+attach 不可恢复，甚至报 `Cannot find default execution context`（执行上下文丢失）→ **一旦 switch_tab 后该 tab 基本报废，须重开 tab**；③ 手动改 title（无 switch_tab）不导致输入失效——根因是 switch_tab 的 attach+set_session+mark 时序组合，非单纯 title 修改
 - URL：`/jobs/detail/{recruitType}/{uuid}?recommendCode={code}&s=2`
 
 ## 三环（hr.cctc.cc，el-select 项目选择，3b S 类）
@@ -116,7 +118,7 @@
 - **端口约定**：**端口 0 自动分配**（`--remote-debugging-port=0` → 读 DevToolsActivePort 端口）彻底避免冲突；browser-use 须带 `BU_CDP_URL=http://127.0.0.1:${PORT}` 强制指向独立实例
 - **反自动化参数**：`--disable-blink-features=AutomationControlled`（否则百度等导航到 about:blank）
 - **故障排查**：/json/version 无响应 → 实例已退出（须 run_in_background 驻留）；403 → Chrome 147+ 默认 profile 禁用 HTTP 发现
-- **CDP 输入三要素（实测必需，通用）**：① **`js()` 不带 target_id 执行在默认 attached tab（about:blank）——`open_page_create(..., switch_tab=switch_tab)` 内置 switch_tab（browser-harness：activateTarget+attach+set_session）一步激活，此后裸 js()/cdp() 自动路由到该 tab，根治"从 about:blank 打开失败"**；② 手动 CDP 输入时 `Target.attachToTarget(targetId=tid, flatten=True)` 拿 sessionId，**所有 Input 域命令（dispatchMouseEvent/insertText 等）须带 `session_id=sid`**；③ **先 `Target.activateTarget(targetId=tid)` 激活目标 tab**，否则 Input 事件不生效（点击无焦点/insertText 无效）
+- **CDP 输入三要素（实测必需，通用）**：① **`js()` 不带 target_id 执行在默认 attached tab（about:blank）——`open_page_create(..., switch_tab=switch_tab)` 内置 switch_tab（browser-harness：activateTarget+attach+set_session）一步激活，此后裸 js()/cdp() 自动路由到该 tab，根治"从 about:blank 打开失败"**；② 手动 CDP 输入时 `Target.attachToTarget(targetId=tid, flatten=True)` 拿 sessionId，**所有 Input 域命令（dispatchMouseEvent/insertText 等）须带 `session_id=sid`**；③ **先 `Target.activateTarget(targetId=tid)` 激活目标 tab**，否则 Input 事件不生效（点击无焦点/insertText 无效）；④ **反自动化站点（百度）禁用 switch_tab**——set_session/mark_tab 干扰 insertText 且 🐴 title 触发反自动化导航，须手动 activateTarget+attach+target_id 定向（见百度坑点4）
 - **受控组件输入**：React 受控搜索框（VIVO/t-ray italent 系）CDP insertText 事件到达但 value 被重置 → 用 `fill_keyword_clickable`（native setter + InputEvent + elementFromPoint 定位"可见可点"框，多框混淆站点）
 
 ## 新增站点笔记模板
