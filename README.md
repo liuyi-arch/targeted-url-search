@@ -17,8 +17,11 @@
 ## 快速开始
 
 ```bash
-# 一次性安装
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# 一次性安装（安全：固定版本 + SHA256 校验，勿用 curl|sh 管道；详见 SKILL.md「六、前提条件」）
+VER=0.12.4
+curl -fsSL -o /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${VER}/uv-aarch64-apple-darwin.tar.gz"  # Intel 用 uv-x86_64-apple-darwin
+echo "99a913b606194867b43086404412c1afe079547fee72ecfb6af7e7b0dd54b0c6  /tmp/uv.tar.gz" | shasum -a 256 -c - || exit 1
+tar -xzf /tmp/uv.tar.gz -C /tmp && sudo mv /tmp/uv-aarch64-apple-darwin/uv /usr/local/bin/   # 手动放入 PATH（不依赖 install.sh 改 profile）
 export PATH="$HOME/.local/bin:$PATH"
 uv tool install browser-use
 browser-use install
@@ -56,9 +59,9 @@ targeted-url-search/
 
 ## 核心流程（3a–3e）
 
-1. **3a 打开页面**：goto_url 导航 → 正文 ≥ 40（min_len 默认 40，适配绑定页/登录页等轻量页面）且标题无错误特征才可用（SPA 慢加载走复查）；正文 40–200 的页面由 3b 二次把关。
+1. **3a 打开页面**：CDP `Target.createTarget` 新开 tab（方案 A，禁用 goto_url/new_tab 封装防反自动化检测）+ 内置 `switch_tab(tid)` 激活（此后裸 `js()`/`cdp()` 自动路由到该 tab）→ 轮询正文 ≥ 40（min_len 默认 40，适配绑定页/登录页等轻量页面）且标题无错误特征才可用（SPA 慢加载走复查）；处理完 `close_tab_keepalive` 保活关闭（防唯一 tab 关闭致窗口消失）。
 2. **3b 导航 Tab**：按 MODE 语义找目标招聘类型 Tab（校招/实习/通用/社招）→ 探测有无下拉（ant-dropdown-trigger / submenu / menu-id 识别；有 → hover 展开；无 → 直接点击）→ 验证（含"初始即目标态"分支与降级链）。
-3. **3c 搜索**：定位搜索框（可见性过滤优先，防双输入框坑）→ 填入 KEYWORD（保持 focus）→ 触发（回车 → 通用按钮 → 指定按钮 JS click）→ 验证生效（URL 参数含 q/query/keyword/keywords 或统计变化，排除固有文案假阳性）。
+3. **3c 搜索**：定位搜索框（可见性/可点性过滤优先，防双输入框坑）→ 填入 KEYWORD（保持 focus；React 受控组件用 `fill_keyword_clickable`，CDP insertText 对其无效）→ 触发（回车 → 通用按钮 → 指定按钮 JS click）→ 验证生效（URL 参数含 q/query/keyword/keywords 或统计变化，排除固有文案假阳性）。
 4. **3d 取搜索结果**：等待岗位容器出现；空 → 结束站点标"没有相关岗位"；非空 → 取 ≤5 个职位标题。
 5. **3e 筛选记录**：KEYWORD 连续子串命中 → 提取命中职位链接；未命中 → 提取第一个职位链接。链接提取按命中率多方法尝试（`<a>` → 祖先 `<a>` → data 属性拼接 → 点击跳转 → SPA 详情按钮 window.open → API 抓 uuid → fiber onClick），必要时直连详情 API 佐证有效性。
 

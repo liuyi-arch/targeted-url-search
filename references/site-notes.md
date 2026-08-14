@@ -81,6 +81,7 @@
 - 坑点（about:blank）：脚本主动导航主 frame 到 about:blank（`reason: scriptInitiated`）→ 禁用 goto_url/new_tab 封装
 - 解法：Chrome 参数含 `--disable-blink-features=AutomationControlled` + CDP createTarget 打开 + target_id 定向
 - 坑点2：搜索须 CDP 真实输入+回车（163→5 条，URL 不变）；卡片 `[class*=post-item]` 无 `<a>` 且 JS click 无效 → CDP 真实点击 + 重写 window.open
+- 坑点3（输入实测）：搜索框非受控 → `activateTarget + attach session + Input.insertText("前端")` 直接生效；"百度一下"按钮 `BUTTON.search-btn__2OnYA` ~(915,446)，CDP 点击后搜索生效；结果标题 get_job_titles 直接可取（`[class*=post]` 命中 post-item）
 - URL：`/jobs/detail/{recruitType}/{uuid}?recommendCode={code}&s=2`
 
 ## 三环（hr.cctc.cc，el-select 项目选择，3b S 类）
@@ -99,14 +100,15 @@
 ## VIVO（hr-campus.vivo.com，italent 系变体）
 
 - 入口：`https://hr-campus.vivo.com/campus/jobs`（打开即目标态；SPA 首载 BodyLen ~167 须等数秒）
-- 坑点1（搜索框多框混淆）：4 个含"搜索"框——顶部被覆盖（hit=DIV）、侧栏"搜索"框（非目标）、列表区"搜索职位关键词"（hit=INPUT，正确目标）→ 逐框 elementFromPoint 校验（find_clickable_search_input）；按钮 `BUTTON.n4CX554ba6hctr1kensJ`
-- 坑点2：标题 `[class*=STJobTitle]`；卡片 `STListItemContent` 无 `<a>` → 点卡片触发 `GetSubmitLimit?jobAdId={uuid}` 抓 uuid（须手动按 target_id）
+- 坑点1（搜索框多框混淆）：4 个含"搜索"框——顶部被覆盖（hit=DIV）、侧栏"搜索"框（非目标）、列表区"搜索职位关键词"（hit=INPUT，正确目标）→ 逐框 elementFromPoint 校验（find_clickable_search_input）；按钮 `BUTTON.n4CX554ba6hctr1kensJ` ~(1124,422)
+- 坑点2（受控组件输入，**实测修正**）：搜索框为 React 受控组件，CDP insertText 触发 input 但 value 被重置（事件到达页面但无效）→ 须 **`fill_keyword_clickable`（native setter + InputEvent 填"可见可点"框）**，再 CDP 点按钮；统计"全部职位（共 N 个）"过滤生效（163→8）
+- 坑点3：标题 `[class*=STJobTitle]`；卡片 `STListItemContent` 无 `<a>` → 点卡片触发 `GetSubmitLimit?jobAdId={uuid}` 抓 uuid（须手动按 target_id）
 - URL：`https://hr-campus.vivo.com/campus/detail?jobAdId={uuid}`
 
 ## t-ray（t-ray.zhiye.com，北森 italent 系）
 
 - 入口：`https://t-ray.zhiye.com/campus/jobs`（打开即目标态：职位列表 9 个）
-- 坑点：同 VIVO 构——顶部搜索框被覆盖，用列表区可见搜索框 + 按钮 `BUTTON.n4CX554ba6hctr1kensJ` CDP 输入
+- 坑点：同 VIVO 构——顶部搜索框被覆盖，用列表区可见搜索框（~(561,420)）+ 按钮 `BUTTON.n4CX554ba6hctr1kensJ` ~(864,420)；**输入同为受控组件，须 native setter + InputEvent 填可见可点框**（同 VIVO 坑点2）
 
 ## Step 0 · 环境检查（非站点）
 
@@ -114,6 +116,8 @@
 - **端口约定**：**端口 0 自动分配**（`--remote-debugging-port=0` → 读 DevToolsActivePort 端口）彻底避免冲突；browser-use 须带 `BU_CDP_URL=http://127.0.0.1:${PORT}` 强制指向独立实例
 - **反自动化参数**：`--disable-blink-features=AutomationControlled`（否则百度等导航到 about:blank）
 - **故障排查**：/json/version 无响应 → 实例已退出（须 run_in_background 驻留）；403 → Chrome 147+ 默认 profile 禁用 HTTP 发现
+- **CDP 输入三要素（实测必需，通用）**：① **`js()` 不带 target_id 执行在默认 attached tab（about:blank）——`open_page_create(..., switch_tab=switch_tab)` 内置 switch_tab（browser-harness：activateTarget+attach+set_session）一步激活，此后裸 js()/cdp() 自动路由到该 tab，根治"从 about:blank 打开失败"**；② 手动 CDP 输入时 `Target.attachToTarget(targetId=tid, flatten=True)` 拿 sessionId，**所有 Input 域命令（dispatchMouseEvent/insertText 等）须带 `session_id=sid`**；③ **先 `Target.activateTarget(targetId=tid)` 激活目标 tab**，否则 Input 事件不生效（点击无焦点/insertText 无效）
+- **受控组件输入**：React 受控搜索框（VIVO/t-ray italent 系）CDP insertText 事件到达但 value 被重置 → 用 `fill_keyword_clickable`（native setter + InputEvent + elementFromPoint 定位"可见可点"框，多框混淆站点）
 
 ## 新增站点笔记模板
 

@@ -78,9 +78,9 @@
 
 对每个 URL 执行以下子步骤，全部通过 `browser-use <<'PY' ... PY` Python pipe 模式调用。
 
-> **多方法尝试约定**：当某动作文件含多个方法（如 hover 的 方法1/方法2）时，**按文件内顺序依次尝试；任一方法成功 → 立即停止尝试该文件内其余方法，进入该步骤的下一步**（方法间是"或"关系，不是"且"关系，不会成功后再执行后续方法）。全部方法失败 → 执行该步骤的兜底逻辑。
+> **多方法尝试约定**：动作文件多方法按序尝试，任一成功即进入下一步（"或"关系，不再执行后续方法）；全部失败走该步骤兜底。
 
-> **pipe 模式执行约定**：① `js()` 返回值为 browser-harness **已解析的 dict/原生值**，勿再包 `json.loads`；② target 跨 pipe 调用持久（方案 A），跨调用用 `Target.getTargets` 按 URL 找回 tid 定向操作，勿重复打开页面。
+> **pipe 模式执行约定**：① js() 返回值已解析，勿再包 json.loads；② target 跨 pipe 持久，跨调用 Target.getTargets 按 URL 找回 tid；③ 裸 js() 默认落在 attached tab（about:blank）→ open_page_create(..., switch_tab=switch_tab) 已内置激活，此后裸 js()/cdp() 自动路由该 tab，未用则全程 target_id 定向；④ CDP Input 域命令（如 Input.dispatchMouseEvent/insertText）须 activateTarget + attach sessionId 并带 session_id=，否则不生效。
 
 ---
 
@@ -93,7 +93,7 @@
 **执行链路**：打开（createTarget 新开 + 轮询就绪）→ 慢加载兜底 → 保活关闭，成功判定通过 → 进入 3b：
 
 - **节点1 · 打开页面**（`scripts/open_page.py`）：
-  - 方法1 `open_page_create(cdp, js, url)`：createTarget 新开 + 轮询正文 ≥ 40（≤15s）→ 返回 (tid, title, body_len)。
+  - 方法1 `open_page_create(cdp, js, url, switch_tab=switch_tab)`：createTarget 新开 + 内置 switch_tab 激活该 tab（根治 js() 落在 about:blank）+ 轮询正文 ≥ 40（≤15s）→ 返回 (tid, title, body_len)。
 - **节点2 · 慢加载兜底**（`scripts/open_page_wait.py`，仅轮询超时正文仍 < 40 时）：
   - 方法1 `open_page_wait(js, wait_for_load)`：wait_for_load → 再等 5s 复查 → 返回 bool。
 - **节点3 · 保活关闭**（`scripts/close_tab_keepalive.py`）：
@@ -133,7 +133,7 @@
     - `has_dropdown=false` → 进入节点3 直接点击。
 - **节点3 · 交互**（下拉展开 `scripts/hover_expand.py` / 直接点击 `scripts/click_tab.py`）：
   - 方法1 `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
-  - 方法2 `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用节点2 返回的 menu_id，JS dispatchEvent 无效，须 CDP 真实鼠标）；
+  - 方法2 `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用节点2 返回的 menu_id，JS dispatchEvent 无效，须 CDP 真实鼠标，按 pipe 约定④）；
   - 方法3 `click_tab(js, text)`：无下拉时直接点击 Tab。
 - **节点4 · 验证**（`scripts/nav_verified.py`）：
   - 方法1 `nav_verified(js, before_url)`：URL 变化 且（搜索框或职位列表出现）→ 成功进入 3c；失败 → 进入降级链下一级。
@@ -158,12 +158,13 @@
   - 均找不到 → 终止当前站点，标注"搜索框未找到"。
 - **节点2 · 填入**（`scripts/fill_keyword.py`）：
   - 方法1 `fill_keyword(js, keyword)`：native setter + InputEvent（`fill_input` 对受控组件无效，禁用），填入后主动 `focus()` 保持焦点；
+  - 方法2 `fill_keyword_clickable(js, keyword)`：**受控组件+多框混淆专用**（VIVO/t-ray italent 系）——逐框 elementFromPoint 校验选可见可点框（hit=INPUT）+ native setter（CDP insertText 对受控组件无效，事件到达但 value 被重置）；
   - 失败 → 结束该站点，标注"填入关键词失败"。
 - **节点3 · 触发**（`scripts/trigger_search.py`）：
   - 方法1 `trigger_enter(js)`：派发回车（React onSubmit）；
   - 方法2 `click_search_btn(js)`：点搜索按钮（onClick 不触发 onSubmit，按钮兜底）；
   - 方法3 `click_btn_by_selector(js, selector)`：按 CSS 选择器 JS click 指定按钮；
-  - 均失败 → 结束该站点，标注"搜索未触发"。
+  - 均失败 → 结束该站点，标注"搜索未触发"。（部分站点搜索按钮须 CDP 真实点击，按 pipe 约定④）
 - **节点4 · 验证生效**（`scripts/search_verified.py`）：
   - 方法1 `url_has_query(js)`；
   - 方法2 `stats_changed(js)`；
@@ -208,6 +209,7 @@
   - 方法5 `extract_via_detail_btn`：SPA 内嵌详情面板：点卡片展开面板 → 点"查看详情"按钮 → 重写 window.open 捕获 `/campus/detail?jobAdId={uuid}`；
   - 方法6 `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接；
   - 方法7 `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转 → 重写 window.open + 触发 fiber onClick 捕获。
+  - CDP 真实点击卡片（百度/antd JS click 无效）按 pipe 约定④。
 
 ---
 
@@ -292,7 +294,7 @@ browser-use doctor  # 验证
 | `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_visible_search_input(js)`（可见性过滤，推荐）/ `find_clickable_search_input(js)`（elementFromPoint 可点校验，VIVO 坑）/ `find_search_input(js)` / `find_in_iframe(js)` |
 | `has_jobs.py`         | 3b    | `has_jobs(js)`                                                                |
 | `hover_expand.py`     | 3b/3d | `hover_expand_css` / `hover_expand_antd` / `click_dropdown_item` / `real_click`（含 antd 辅助） |
-| `fill_keyword.py`     | 3c    | `fill_keyword(js, keyword)`（建议 native setter，禁用 fill_input）             |
+| `fill_keyword.py`     | 3c    | `fill_keyword(js, keyword)`（native setter，禁用 fill_input）/ `fill_keyword_clickable(js, keyword)`（可见可点框，受控组件+多框混淆 VIVO/t-ray 用） |
 | `trigger_search.py`   | 3c    | `trigger_enter(js)` / `click_search_btn(js)` / `click_btn_by_selector(js, selector)`（JS click 指定按钮） |
 | `search_verified.py`  | 3c    | `url_has_query(js)`（含 keywords=） / `stats_changed(js)`（排除固有文案假阳性） / `search_verified(js)` |
 | `wait_results.py`     | 3d    | `wait_jobs(js, wait_for_load)`                                                |
