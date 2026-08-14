@@ -25,7 +25,7 @@ browser-use install
 browser-use doctor  # 验证
 
 # 每次执行前
-bash scripts/env_check.sh  # 清理调试实例 → 二进制启动 Chrome(9222, IPv4) → 轮询验证端口
+bash scripts/env_check.sh  # 启动独立 Chrome 调试实例（端口 0 自动分配 + 唯一 profile）→ 输出端口与 BU_CDP_URL
 ```
 
 ## 使用方式
@@ -43,8 +43,8 @@ targeted-url-search/
 │   ├── patterns.md                # 特例层模式库（索引表 = 唯一增长点）
 │   └── site-notes.md              # 单站点经验
 └── scripts/                       # 一个动作一个文件
-    ├── env_check.sh               # Step 0 环境检查
-    ├── open_page.py / open_page_wait.py   # 3a 导航+轮询就绪 / 极慢加载兜底
+    ├── env_check.sh               # Step 0 环境检查（端口 0 自动分配 + 唯一 profile）
+    ├── open_page.py / open_page_wait.py / close_tab_keepalive.py   # 3a 打开 / 慢加载兜底 / 保活关闭
     ├── find_tab.py / tab_has_dropdown.py / click_tab.py / nav_verified.py / url_changed.py   # 3b
     ├── has_search_input.py / has_jobs.py / hover_expand.py             # 3b/3c
     ├── fill_keyword.py / trigger_search.py / search_verified.py        # 3c

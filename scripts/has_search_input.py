@@ -53,6 +53,30 @@ def find_visible_search_input(js):
     return None if res == 'null' else res
 
 
+def find_clickable_search_input(js):
+    """**方法5（VIVO 坑专用）**：逐框 elementFromPoint 校验，返回**真正可点击**的搜索框（命中元素为 INPUT）。
+    适配 VIVO/t-ray：页面多个含"搜索"输入框——顶部框被导航层覆盖（elementFromPoint 命中 DIV）、
+    侧栏"搜索"框可见但非搜索目标（find_visible_search_input 会误命中它）；须选 placeholder 含"搜索职位"
+    且 elementFromPoint 命中 INPUT 的列表区框。返回 {x, y, placeholder} 或 None。"""
+    res = js("""
+    (function() {
+        let inputs = document.querySelectorAll('input');
+        for (let inp of inputs) {
+            let ph = (inp.placeholder || '').toLowerCase();
+            if (!(ph.includes('搜索职位')||ph.includes('职位关键词')||ph.includes('搜索岗位'))) continue;
+            let r = inp.getBoundingClientRect();
+            if (inp.offsetParent === null || r.width <= 0) continue;
+            let cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+            let el = document.elementFromPoint(cx, cy);
+            if (el && (el.tagName === 'INPUT' || el === inp))
+                return JSON.stringify({id: inp.id, name: inp.name, placeholder: inp.placeholder, x: cx, y: cy, w: Math.round(r.width)});
+        }
+        return 'null';
+    })()
+    """)
+    return None if res == 'null' else res
+
+
 def find_in_iframe(js):
     """主文档无搜索框时，遍历 iframe 在子文档内定位。返回元素信息或 None（跨源抛错则跳过）。"""
     res = js("""

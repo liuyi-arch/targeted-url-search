@@ -46,15 +46,24 @@
 
 ### Step 0 · 环境检查
 
-> **意图**：Chrome 调试实例在 9222 监听、可被 browser-use 连接，不阻塞 3a–3e。
-> **成功判定**：`env_check.sh` 退出码 0 且输出 `[ok] Chrome 调试端口 9222 已监听`（curl `/json/version` 含 `"Browser"`）。
-> **失败归因**：端口有响应但验证未命中（如 IPv6 监听而 curl 用 127.0.0.1、轮询不足）→ **M 类**（加方法）；其余（无监听、启动失败、残留占端口）→ **S 类**（进特例层）。
+> **意图**：启动独立 Chrome 调试实例（端口自动分配 + 独立 profile），可被 browser-use 连接。
+> **成功判定**：`bash scripts/env_check.sh` 退出码 0 且输出 `[ok] Chrome 调试实例就绪，端口 ${PORT}（系统自动分配，独立 profile）`。
+> **失败归因**：端口有响应但验证未命中 → **M 类**；无监听/启动失败 → **S 类**。
 
-**执行链路**：`bash scripts/env_check.sh`：lsof 清 9222 → 二进制启动 Chrome(IPv4, --no-sandbox) → 轮询验证（最多 15s，失败 tail 日志并 exit 1），通过 → 进入 3a。
+**执行链路**：启动独立实例 → 读取端口 → 验证就绪 → 输出连接信息，成功判定通过 → 进入 3a：
+
+- **节点1 · 启动独立实例**（`scripts/env_check.sh`）：
+  - 方法1：唯一 profile（`/tmp/chrome-debug-profile-$(date +%s)`）+ `--remote-debugging-port=0` 启动 Chrome（`--disable-blink-features=AutomationControlled` 防反自动化站点检测）。
+- **节点2 · 读取端口**：
+  - 方法1：读 `DevToolsActivePort` 文件第一行（Chrome 自动分配的空闲端口，系统保证不与用户进程冲突）。
+- **节点3 · 验证就绪**（≤15s 轮询）：
+  - 方法1：`curl /json/version` 含 `"Browser"` → 就绪；超时 → `[FAIL]` + tail 日志 + exit 1。
+- **节点4 · 输出连接信息**：
+  - 方法1：输出 `[ok] ... 端口 ${PORT}` + `[hint] export BU_CDP_URL=http://127.0.0.1:${PORT}`（browser-use 调用必须带此环境变量强制指向独立实例）。
 
 ### Step 1 执行策略
 
-1. **一律先走常规工作流 3a–3e**——特例不是查表查出来的，是执行中走不通才触发的。
+1. **一律先走常规工作流 3a–3e**。
 2. 执行中**每个动作失败时记录失败信号**（不中断，动作有兜底），流程结束后汇总判定：
    - **方法性失败（M 类）**＝目标元素**存在**但当前方法未命中（如页面有下拉菜单但 hover 方法都不触发、有岗位但提取方法拿不到）→ 判定"工作流可行，仅方法不足" → 动作文件加方法（见"五、经验沉淀"）。
    - **结构性失败（S 类）**＝目标元素**不存在**（如 3b 导航区无任何招聘入口、3d 页面无任何岗位元素、3a 页面打不开）→ 判定"该站点常规工作流走不通" → 进入特例流程（见"五、经验沉淀"）。
@@ -71,19 +80,24 @@
 
 > **多方法尝试约定**：当某动作文件含多个方法（如 hover 的 方法1/方法2）时，**按文件内顺序依次尝试；任一方法成功 → 立即停止尝试该文件内其余方法，进入该步骤的下一步**（方法间是"或"关系，不是"且"关系，不会成功后再执行后续方法）。全部方法失败 → 执行该步骤的兜底逻辑。
 
+> **pipe 模式执行约定**：① `js()` 返回值为 browser-harness **已解析的 dict/原生值**，勿再包 `json.loads`；② target 跨 pipe 调用持久（方案 A），跨调用用 `Target.getTargets` 按 URL 找回 tid 定向操作，勿重复打开页面。
+
 ---
 
 #### 3a · 打开页面并确认可用
 
 > **意图**：页面可进入后续流程（非白屏/空壳 DOM/错误页）。
 > **成功判定**（意图的充分条件）：正文 ≥ 40 且标题无错误特征 → 进入 3b。
-> **失败归因**：DOM 有内容但方法未命中（如等待/取标题时机不对）→ **M 类**（加方法）；无 DOM/空壳/错误页 → **S 类**（进特例层）。
+> **失败归因**：DOM 有内容但方法未命中 → **M 类**（加方法）；无 DOM/空壳/错误页 → **S 类**（进特例层）。
 
-**执行链路**：导航打开（轮询就绪）→ 慢加载兜底（仅轮询超时后），成功判定通过 → 进入 3b：
+**执行链路**：打开（createTarget 新开 + 轮询就绪）→ 慢加载兜底 → 保活关闭，成功判定通过 → 进入 3b：
 
-- **导航打开**：`open_page(goto_url, js, url)`（`scripts/open_page.py`）：goto_url 导航（不 new_tab）→ 轮询正文 ≥ 40（每 1s，最多 15s）→ 返回 (title, body_len)。
-
-- **慢加载兜底**（仅轮询超时正文仍 < 40 时）：`open_page_wait(js, wait_for_load)`（`scripts/open_page_wait.py`）：wait_for_load → 再等 5s 复查 → 返回 bool 是否达标。
+- **节点1 · 打开页面**（`scripts/open_page.py`）：
+  - 方法1 `open_page_create(cdp, js, url)`：createTarget 新开 + 轮询正文 ≥ 40（≤15s）→ 返回 (tid, title, body_len)。
+- **节点2 · 慢加载兜底**（`scripts/open_page_wait.py`，仅轮询超时正文仍 < 40 时）：
+  - 方法1 `open_page_wait(js, wait_for_load)`：wait_for_load → 再等 5s 复查 → 返回 bool。
+- **节点3 · 保活关闭**（`scripts/close_tab_keepalive.py`）：
+  - 方法1 `close_tab_keepalive(cdp, tid)`：关闭前若该 tab 将是最后一个 page tab，先建 about:blank 占位，防窗口消失/浏览器重启。
 
 
 #### 3b · 导航至目标招聘类型 Tab（含 hover 下拉展开）
@@ -109,16 +123,22 @@
 | 2    | 类别二 → 类别一（结果说明"可能包含校招正式批次岗位"） → 类别三（结果说明"可能包含校招正式批次/社招批次岗位"） → 仍无 → 直接进入 3c 搜索，结果说明"不确定是否是实习批次岗位" |
 | 3    | 先按 MODE=1 走完 3b–3e，再按 MODE=2 走完 3b–3e         |
 
-**每级执行链**（找 tab → 探测有无下拉 → 按结果交互 → 验证；失败进入降级链下一级，不执行该级后续操作；成功进入执行链下一级）：
+**执行链路**：找 tab → 探测有无下拉 → 按结果交互 → 验证，成功判定通过 → 进入 3c（失败进入降级链下一级，不执行该级后续操作）：
 
-1. **找 tab**：`scripts/find_tab.py` 的 `find_tab(js, mode)` 按 MODE 语义关键词找直接可见 Tab（返回 {found, text}）。
-2. **探测有无下拉**：`scripts/tab_has_dropdown.py` 的 `tab_has_dropdown(js, text)` 返回 `{has_dropdown, menu_id}`：
-   - `has_dropdown=true` → 依次执行 `scripts/hover_expand.py`（多方法按序，任一成功 → 进入第 3 步验证）：
-     - **方法1** `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
-     - **方法2** `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用第 2 步返回的 menu_id，JS dispatchEvent 无效，须 CDP 真实鼠标）；
-   - `has_dropdown=false` → `scripts/click_tab.py` 的 `click_tab(js, text)` 直接点击。
-3. **验证**：`scripts/nav_verified.py` 的 `nav_verified(js, before_url)`成功 → 进入 3c；失败 → 进入降级链下一级。
-4. **仍失败 → 进入降级链下一级**
+- **节点1 · 找 tab**（`scripts/find_tab.py`）：
+  - 方法1 `find_tab(js, mode)`：按 MODE 语义关键词找直接可见 Tab → 返回 {found, text}。
+- **节点2 · 探测有无下拉**（`scripts/tab_has_dropdown.py`）：
+  - 方法1 `tab_has_dropdown(js, text)` → 返回 {has_dropdown, menu_id}：
+    - `has_dropdown=true` → 进入节点3 下拉展开；
+    - `has_dropdown=false` → 进入节点3 直接点击。
+- **节点3 · 交互**（下拉展开 `scripts/hover_expand.py` / 直接点击 `scripts/click_tab.py`）：
+  - 方法1 `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
+  - 方法2 `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用节点2 返回的 menu_id，JS dispatchEvent 无效，须 CDP 真实鼠标）；
+  - 方法3 `click_tab(js, text)`：无下拉时直接点击 Tab。
+- **节点4 · 验证**（`scripts/nav_verified.py`）：
+  - 方法1 `nav_verified(js, before_url)`：URL 变化 且（搜索框或职位列表出现）→ 成功进入 3c；失败 → 进入降级链下一级。
+  - 方法2 `has_type_evidence(js, mode)`：类型切换证据（备用）。
+- **仍失败 → 进入降级链下一级**（无 Tab 且无类型切换机制的站点 → **S 类**，见 site-notes 三环项目/批次选择弹窗）
 
 ---
 
@@ -128,25 +148,23 @@
 > **成功判定**（意图的充分条件）：`search_verified(js)` 通过 = URL 含 KEYWORD 查询参数**或** 职位统计/列表切换为过滤后结果 → 已按 KEYWORD 过滤。
 > **失败归因**：搜索机制存在但方法未命中（页面有搜索入口但 定位/填入/触发/验证 任一失败）→ **M 类**（加方法）；搜索机制不存在（无搜索框/按钮/表单）→ **S 类**（进特例层）。
 
-**执行链路**：定位 → 填入 → 触发 → 验证生效（四个动作各自独立成文件，多方法按序，任一成功 → 下一步）：
+**执行链路**：定位搜索框 → 填入 → 触发 → 验证生效，成功判定通过 → 进入 3d（四个动作各自独立成文件，多方法按序，任一成功 → 下一步）：
 
-- **定位搜索框**：`scripts/has_search_input.py`（多方法按命中率排序）。
-  - 方法1 `find_visible_search_input(js)`（最稳）：只返回**可见**搜索框（过滤 `offsetParent!==null && rect.width>0`）——适配 italent/zhiye 系与美团"两个同名输入框、第一个隐藏 rect 0,0"坑；
-  - 方法2 `find_search_input(js)` 主文档定位（placeholder 含 搜索/职位/岗位，不保证可见）；
-  - 方法3 `find_in_iframe(js)` iframe 兜底（跨源跳过）；
+- **节点1 · 定位搜索框**（`scripts/has_search_input.py`，多方法按命中率排序）：
+  - 方法1 `find_visible_search_input(js)`：只返回**可见**搜索框（过滤 `offsetParent!==null && rect.width>0`）；
+  - 方法2 `find_clickable_search_input(js)`：逐框 elementFromPoint 校验，返回**真正可点击**框（命中 INPUT）；
+  - 方法3 `find_search_input(js)`：主文档定位（placeholder 含 搜索/职位/岗位，不保证可见）；
+  - 方法4 `find_in_iframe(js)`：iframe 兜底（跨源跳过）；
   - 均找不到 → 终止当前站点，标注"搜索框未找到"。
-
-- **填入**：`scripts/fill_keyword.py` 。
-  - 方法1`fill_keyword(js, keyword)` ， native setter + InputEvent（`fill_input` 对受控组件无效，禁用），填入后主动 `focus()` 保持焦点；
+- **节点2 · 填入**（`scripts/fill_keyword.py`）：
+  - 方法1 `fill_keyword(js, keyword)`：native setter + InputEvent（`fill_input` 对受控组件无效，禁用），填入后主动 `focus()` 保持焦点；
   - 失败 → 结束该站点，标注"填入关键词失败"。
-
-- **触发**：`scripts/trigger_search.py` 。
-  - 方法1 `trigger_enter(js)` 派发回车（React onSubmit）；
-  - 方法2 `click_search_btn(js)` 点搜索按钮（onClick 不触发 onSubmit，按钮兜底）；
-  - 方法3 `click_btn_by_selector(js, selector)` 按 CSS 选择器 JS click 指定按钮；
+- **节点3 · 触发**（`scripts/trigger_search.py`）：
+  - 方法1 `trigger_enter(js)`：派发回车（React onSubmit）；
+  - 方法2 `click_search_btn(js)`：点搜索按钮（onClick 不触发 onSubmit，按钮兜底）；
+  - 方法3 `click_btn_by_selector(js, selector)`：按 CSS 选择器 JS click 指定按钮；
   - 均失败 → 结束该站点，标注"搜索未触发"。
-
-- **验证生效**：`scripts/search_verified.py` 。
+- **节点4 · 验证生效**（`scripts/search_verified.py`）：
   - 方法1 `url_has_query(js)`；
   - 方法2 `stats_changed(js)`；
   - 均未命中 → 结束该站点，标注"搜索未生效"。
@@ -160,11 +178,15 @@
 > **成功判定**（意图的充分条件）：搜索结果非空 → 取到 ≤5 个职位标题 → 进入 3e。
 > **失败归因**：有岗位但标题提取方法未命中 → **M 类**（加方法）；搜索结果为空（无任何岗位）→ 结束该站点，标注"没有相关岗位"。
 
-先轮询等待岗位容器出现：`scripts/wait_results.py`的`wait_jobs(js, wait_for_load)`（`[class*=job-title],[class*=JobTitle],[class*=position],[class*=job-item],[class*=post]`，最多 ~10s）。
+**执行链路**：等待岗位容器 → 判断结果 → 取标题，成功判定通过 → 进入 3e：
 
-再判断搜索结果：
-- **空** → 结束该站点，标注"没有相关岗位"；
-- **非空** → `scripts/extract_titles.py` 的 `get_job_titles(js, limit=5)` 取最多 5 个职位标题。
+- **节点1 · 等待岗位容器**（`scripts/wait_results.py`）：
+  - 方法1 `wait_jobs(js, wait_for_load)`：轮询等待岗位容器出现（`[class*=job-title],[class*=JobTitle],[class*=position],[class*=job-item],[class*=post]`，最多 ~10s）。
+- **节点2 · 判断结果**：
+  - **空** → 结束该站点，标注"没有相关岗位"；
+  - **非空** → 进入节点3。
+- **节点3 · 取职位标题**（`scripts/extract_titles.py`）：
+  - 方法1 `get_job_titles(js, limit=5)`：取最多 5 个职位标题。
 
 ---
 
@@ -174,18 +196,18 @@
 > **成功判定**（意图的充分条件）：产出 ≥1 个岗位链接（命中职位的链接，或未命中时第一个职位的链接）→ 记录。
 > **失败归因**：标题已取到但链接提取方法未命中 → **M 类**（加方法）。
 
-对 3d 取的职位标题判定（`scripts/match_links.py` 的 `match_titles(titles, keyword)`：连续子串）后，调用 `extract_matched_links(js, cdp, titles, keyword)` 提取：
-- **有连续子串命中** → 提取**命中职位**的岗位链接；
-- **无连续子串命中** → 函数兜底提取**第一个职位**的岗位链接，标注"无精确匹配，取第 1 个岗位"；
+**执行链路**：判定 KEYWORD 是否命中标题 → 提取命中/兜底岗位链接，产出 ≥1 个岗位链接 → 记录：
 
-**提取链接的底层方法（`scripts/extract_links.py`，按命中率排序，任一成功即停止）**：
-- `extract_a_links`（最稳）：`<a>` 链接提取（常规）
-- `extract_ancestor_a`：卡片本身无 `<a>`，取祖先 `<a>` 的 href（metaAPP `[data-test=positionItem]` → `/position/{id}/detail?share_token=...`）
-- `extract_via_attr`：卡片为 div 带 data- 属性（美团 `.position_list_item` 的 `data-jobunionid`）→ 读属性 + URL 模板拼接
-- `extract_by_click`：JS click 跳转取 URL（SPA 路由跳转场景）
-- `extract_via_detail_btn`：SPA 内嵌详情面板：点卡片展开面板 → 点"查看详情"按钮 → 重写 window.open 捕获 `/campus/detail?jobAdId={uuid}`
-- `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接
-- `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转（网易）→ 重写 window.open + 触发 fiber onClick 捕获
+- **节点1 · 判定命中**（`scripts/match_links.py`）：
+  - 方法1 `match_titles(titles, keyword)`：KEYWORD 是否为标题**连续子串** → 命中列表 / 未命中（兜底取第 1 个岗位，标注"无精确匹配，取第 1 个岗位"）。
+- **节点2 · 提取链接**（`scripts/extract_links.py` + `match_links.py` 编排 `extract_matched_links`，按命中率排序，任一成功即停止）：
+  - 方法1 `extract_a_links`：`<a>` 链接提取；
+  - 方法2 `extract_ancestor_a`：卡片本身无 `<a>`，取祖先 `<a>` 的 href（`[data-test=positionItem]` → `/position/{id}/detail?share_token=...`）；
+  - 方法3 `extract_via_attr`：卡片为 div 带 data- 属性（`.position_list_item` 的 `data-jobunionid`）→ 读属性 + URL 模板拼接；
+  - 方法4 `extract_by_click`：JS click 跳转取 URL（SPA 路由跳转场景）；
+  - 方法5 `extract_via_detail_btn`：SPA 内嵌详情面板：点卡片展开面板 → 点"查看详情"按钮 → 重写 window.open 捕获 `/campus/detail?jobAdId={uuid}`；
+  - 方法6 `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接；
+  - 方法7 `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转 → 重写 window.open + 触发 fiber onClick 捕获。
 
 ---
 
@@ -258,15 +280,16 @@ browser-use doctor  # 验证
 
 | 脚本                    | 步骤   | 核心函数                                                                          |
 | --------------------- | ---- | ----------------------------------------------------------------------------- |
-| `env_check.sh`        | Step 0 | 环境检查（清理→二进制启动 Chrome(IPv4)→轮询验证端口）                             |
-| `open_page.py`        | 3a    | `open_page(goto_url, js, url)`（导航 + 轮询就绪）                            |
+| `env_check.sh`        | Step 0 | 环境检查（启动独立 Chrome 调试实例：端口 0 自动分配 + 唯一 profile → 输出端口与 BU_CDP_URL） |
+| `open_page.py`        | 3a    | `open_page_create(cdp, js, url)`（**方案 A 默认**：createTarget 新开+轮询就绪，返回 tid）  |
+| `close_tab_keepalive.py` | 3a | `close_tab_keepalive(cdp, tid)`（保活关闭：最后一个 tab 前先建 about:blank 占位，防窗口消失） |
 | `open_page_wait.py`   | 3a    | `open_page_wait(js, wait_for_load)`（SPA 极慢加载兜底）                        |
 | `find_tab.py`         | 3b    | `find_tab(js, mode)`                                                          |
 | `tab_has_dropdown.py` | 3b    | `tab_has_dropdown(js, text)` → {has_dropdown, menu_id}（探测有无下拉）      |
 | `click_tab.py`        | 3b    | `click_tab(js, text)`                                                         |
 | `nav_verified.py`     | 3b    | `nav_verified(js, before_url)`（组合 url_changed/has_*，排除宣传落地页）/ `has_type_evidence(js, mode)` |
 | `url_changed.py`      | 3b    | `url_changed(js, before_url)`                                                 |
-| `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_search_input(js)` / `find_in_iframe(js)` / `find_visible_search_input(js)`（可见性过滤，推荐） |
+| `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_visible_search_input(js)`（可见性过滤，推荐）/ `find_clickable_search_input(js)`（elementFromPoint 可点校验，VIVO 坑）/ `find_search_input(js)` / `find_in_iframe(js)` |
 | `has_jobs.py`         | 3b    | `has_jobs(js)`                                                                |
 | `hover_expand.py`     | 3b/3d | `hover_expand_css` / `hover_expand_antd` / `click_dropdown_item` / `real_click`（含 antd 辅助） |
 | `fill_keyword.py`     | 3c    | `fill_keyword(js, keyword)`（建议 native setter，禁用 fill_input）             |
