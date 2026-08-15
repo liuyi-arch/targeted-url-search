@@ -204,7 +204,7 @@
   - 方法7 `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转 → 重写 window.open + 触发 fiber onClick 捕获；
   - 任一方法脚本成功执行：标题含 KEYWORD（连续子串）→ 取所有精准命中岗位链接，进入3f；标题不含（未命中）→ 兜底取第一个岗位链接，进入3f（命中与未命中均属正常结果）；所有方法脚本执行异常（抛错）或均无法产出岗位链接，结束该站点，归类M。
 
-#### 3f · **保活关闭**
+#### 3f · **保活关闭（强制执行，tab 数保持 ≤2）**
 
 - **节点1**（`scripts/close_tab_keepalive.py`）：
   - 方法1 `close_tab_keepalive(cdp, tid)`：关闭前若该 tab 将是最后一个 page tab，先建 about:blank 占位，防窗口消失/浏览器重启；
