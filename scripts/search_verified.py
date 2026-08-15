@@ -25,7 +25,7 @@ CHANGED_STATS = re.compile(r'(共\s*\d+\s*(个|条)|职位列表\s*\d+\s*个|暂
 
 def stats_changed(js):
     """方法2：页面是否出现搜索统计变化（共N个/职位列表N个/暂无职位）。返回 bool。
-    适配坑：italent/zhiye 系页面**固有**文案"全部职位（共 84 个）"会误命中 `共\s*\d+\s*个` → 假阳性。
+    适配坑：italent/zhiye 系页面**固有**文案"全部职位（共 84 个）"会误命中 `共\\s*\\d+\\s*个` → 假阳性。
     处理：若统计文案仅命中 STATIC_STATS（固有文案）且无"暂无/未找到" → 判 False；只有 CHANGED_STATS
     （结果数变化或空结果提示）才算真命中。"""
     t = js("document.body.innerText.slice(0, 3000)")

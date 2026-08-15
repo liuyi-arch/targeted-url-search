@@ -1,6 +1,8 @@
 # 站点笔记（site-notes）
 
-> S 类失败新站点先记这里；同坑 ≥2 次 → 升 patterns.md。
+> **记录规范**：AI 执行期把每次 M/S 错误**按站点记录**到本文件（URL 入口 + 失败环节 + 原因，10 行内）。
+> **M/S 语义**：**M（方法不足）**＝目标元素存在但当前方法未命中，或脚本抛错；**S（站点走不通）**＝目标元素不存在（无招聘入口/无岗位元素/页面打不开）。**空结果（false/空列表）不归类**。
+> **沉淀（用户操作）**：用户读本文件记录后——M 类 → `scripts/*.py` 加方法；S 类同坑 ≥2 次 → 升 patterns.md 新模式。
 
 ## 联想（自研站点，P1 示例）
 
@@ -120,6 +122,13 @@
 - **故障排查**：/json/version 无响应 → 实例已退出（须 run_in_background 驻留）；403 → Chrome 147+ 默认 profile 禁用 HTTP 发现
 - **CDP 输入三要素（实测必需，通用）**：① **`js()` 不带 target_id 执行在默认 attached tab（about:blank）——`open_page_create(..., switch_tab=switch_tab)` 内置 switch_tab（browser-harness：activateTarget+attach+set_session）一步激活，此后裸 js()/cdp() 自动路由到该 tab，根治"从 about:blank 打开失败"**；② 手动 CDP 输入时 `Target.attachToTarget(targetId=tid, flatten=True)` 拿 sessionId，**所有 Input 域命令（dispatchMouseEvent/insertText 等）须带 `session_id=sid`**；③ **先 `Target.activateTarget(targetId=tid)` 激活目标 tab**，否则 Input 事件不生效（点击无焦点/insertText 无效）；④ **反自动化站点（百度）禁用 switch_tab**——set_session/mark_tab 干扰 insertText 且 🐴 title 触发反自动化导航，须手动 activateTarget+attach+target_id 定向（见百度坑点4）
 - **受控组件输入**：React 受控搜索框（VIVO/t-ray italent 系）CDP insertText 事件到达但 value 被重置 → 用 `fill_keyword_clickable`（native setter + InputEvent + elementFromPoint 定位"可见可点"框，多框混淆站点）
+
+## 万得（wind.com.cn/mobile，自研 SPA，P3 隐藏搜索框）
+
+- 入口：`https://www.wind.com.cn/mobile/JoinUS/RecruitDetail/zh.html?entry=school`
+- 坑点1（3b）：首页为宣传落地页，**初始无搜索框、无职位列表**（INPUTS=[]）→ **先点"2027年校园招聘"标题 div**（`e.children.length<=2` 取叶子）才进校招职位列表并出现搜索框；"社会招聘" Tab 为社招列表
+- 坑点2（搜索，已验证）：点击后出现 placeholder="请输入职位"（**非"搜索"**）→ 按 `placeholder.includes('职位')` 匹配填入 + Enter 生效；校招"前端"→暂无数据（清空后列表恢复，证明过滤生效，**搜到"暂无数据"即最终结果，无需再验证**）
+- 坑点3（详情）：卡片为 `<a>`（class 含 `index_container`）直接取 href `PositionDetail/zh.html?ChannelPositionID={id}`；已验证社招 前端开发工程师（Web）1289 / AI工程研发（全栈/后端/前端）1470
 
 ## 新增站点笔记模板
 
