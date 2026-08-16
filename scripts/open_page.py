@@ -1,17 +1,28 @@
 # -*- coding: utf-8 -*-
-"""3a 第一步：goto_url 导航打开页面并取状态。用法：browser-use <<'PY' ... PY 中调用。
-
-职责边界：本文件只负责"导航 + 取页面状态"，成败判定在流程内完成
-（意图=页面可进入后续流程：正文 ≥ 200 + 标题无错误特征）；正文 < 200（SPA 慢加载）→ 由 open_page_wait.py 复查。
-"""
+"""3a 打开页面：createTarget 新开 tab + 轮询就绪 + switch_tab 设置 active session（方案 A 默认，禁用 goto_url/new_tab 封装）。"""
 
 import time
 
 
-def open_page(goto_url, page_info, url, sleep_s=3.0):
-    """goto_url 在当前标签页导航（站点间不 new_tab，100+ 站点内存爆炸），sleep 后取标题确认。返回 page_info() 结果。"""
-    goto_url(url)
-    time.sleep(sleep_s)
-    info = page_info()
-    print(f"Title: {info.get('title', '')}")
-    return info
+def open_page_create(cdp, js, url, min_len=40, timeout=15, sleep_s=1.0, switch_tab=None):
+    """createTarget 新开 tab + 轮询正文 ≥ min_len。返回 (tid, title, body_len)；处理完须 close_tab_keepalive 释放。
+    传 switch_tab（browser-harness 内置）→ 打开后自动激活该 tab（activateTarget+attach+set_session），
+    此后裸 js()/cdp() 默认执行在该 tab，根治"js() 落在 about:blank"坑。"""
+    tid = cdp("Target.createTarget", url=url)["targetId"]
+    if switch_tab:
+        try:
+            switch_tab(tid)
+        except Exception:
+            pass  # 激活失败不阻断，仍可用 target_id 定向
+    title, length = "", 0
+    for _ in range(int(timeout / sleep_s)):
+        try:
+            title = js("document.title", target_id=tid)
+            length = int(js("(document.body && document.body.innerText.length) || 0", target_id=tid) or 0)
+        except Exception:
+            title, length = "", 0
+        if length >= min_len:
+            break
+        time.sleep(sleep_s)
+    print(f"TID: {tid} | Title: {title} | BodyLen: {length}")
+    return tid, title, length

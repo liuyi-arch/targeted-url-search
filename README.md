@@ -7,7 +7,7 @@
 
 | 层级 | 位置 | 职责 |
 |---|---|---|
-| 编排层 | `targeted-url-search-skill.md` | 触发模式、输入参数、3a–3e 完整 workflow、判定标准、兜底逻辑、经验沉淀流程（执行时无需跳转） |
+| 编排层 | `targeted-url-search-skill.md` | 触发模式、输入参数、3a–3f 完整 workflow、判定标准、兜底逻辑（执行时无需跳转） |
 | 经验层 | `references/patterns.md` | 特例层模式库（仅 S 类失败站点） |
 | 经验层 | `references/site-notes.md` | 单站点经验临时记录（S 类新站点） |
 | 动作层 | `scripts/*.py` | 一个动作一个文件；文件内多函数 = 不同实现方法 |
@@ -17,15 +17,18 @@
 ## 快速开始
 
 ```bash
-# 一次性安装
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# 一次性安装（安全：固定版本 + SHA256 校验，勿用 curl|sh 管道；详见 SKILL.md「五、前提条件」）
+VER=0.12.4
+curl -fsSL -o /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${VER}/uv-aarch64-apple-darwin.tar.gz"  # Intel 用 uv-x86_64-apple-darwin
+echo "99a913b606194867b43086404412c1afe079547fee72ecfb6af7e7b0dd54b0c6  /tmp/uv.tar.gz" | shasum -a 256 -c - || exit 1
+tar -xzf /tmp/uv.tar.gz -C /tmp && sudo mv /tmp/uv-aarch64-apple-darwin/uv /usr/local/bin/   # 手动放入 PATH（不依赖 install.sh 改 profile）
 export PATH="$HOME/.local/bin:$PATH"
 uv tool install browser-use
 browser-use install
 browser-use doctor  # 验证
 
 # 每次执行前
-bash scripts/env_check.sh  # 清理调试实例 → 启动 Chrome(9222) → 验证连接
+bash scripts/env_check.sh  # 启动独立 Chrome 调试实例（端口 0 自动分配 + 唯一 profile）→ 输出端口与 BU_CDP_URL
 ```
 
 ## 使用方式
@@ -43,21 +46,28 @@ targeted-url-search/
 │   ├── patterns.md                # 特例层模式库（索引表 = 唯一增长点）
 │   └── site-notes.md              # 单站点经验
 └── scripts/                       # 一个动作一个文件
-    ├── env_check.sh               # Step 0 环境检查
-    ├── open_page.py / open_page_wait.py   # 3a 导航打开 / 慢加载复查
-    ├── find_tab.py / click_tab.py / nav_verified.py / url_changed.py   # 3b
+    ├── env_check.sh               # Step 0 环境检查（端口 0 自动分配 + 唯一 profile）
+    ├── open_page.py / open_page_wait.py / close_tab_keepalive.py   # 3a 打开 / 慢加载兜底 / 保活关闭
+    ├── find_tab.py / tab_has_dropdown.py / click_tab.py / nav_verified.py / url_changed.py   # 3b
     ├── has_search_input.py / has_jobs.py / hover_expand.py             # 3b/3c
     ├── fill_keyword.py / trigger_search.py / search_verified.py        # 3c
     ├── wait_results.py            # 3d 等待岗位容器
-    └── extract_jobs.py            # 3d/3e 取标题 + 按 KEYWORD 提取链接
+    ├── extract_titles.py          # 3d 取职位标题
+    ├── extract_links.py           # 3e 链接提取底层方法
+    └── match_links.py             # 3e 判定 + 编排提取
 ```
 
-## 核心流程（3a–3e）
+## 核心流程（3a–3f）
 
-1. **3a 打开页面**：goto_url 导航 → 正文 ≥ 200 且标题无错误特征才可用（SPA 慢加载走复查）。
-2. **3b 导航 Tab**：按 MODE 语义找/点目标招聘类型 Tab（校招/实习/通用/社招），含降级链。
-3. **3c 搜索**：定位搜索框 → 填入 KEYWORD → 触发 → 验证生效（URL 参数或统计变化）。
+1. **3a 打开页面**：CDP `Target.createTarget` 新开 tab（方案 A，禁用 goto_url/new_tab 封装防反自动化检测）+ 内置 `switch_tab(tid)` 激活（此后裸 `js()`/`cdp()` 自动路由到该 tab）→ 轮询正文 ≥ 40（min_len 默认 40，适配绑定页/登录页等轻量页面）且标题无错误特征才可用（SPA 慢加载走复查）；处理完 `close_tab_keepalive` 保活关闭（防唯一 tab 关闭致窗口消失）。
+2. **3b 导航 Tab**：按 MODE 语义找目标招聘类型 Tab（校招/实习/通用/社招）→ 探测有无下拉（ant-dropdown-trigger / submenu / menu-id 识别；有 → hover 展开；无 → 直接点击）→ 验证（含"初始即目标态"分支与降级链）。
+3. **3c 搜索**：定位搜索框（可见性/可点性过滤优先，防双输入框坑）→ 填入 KEYWORD（保持 focus；React 受控组件用 `fill_keyword_clickable`，CDP insertText 对其无效）→ 触发（回车 → 通用按钮 → 指定按钮 JS click）→ 验证生效（URL 参数含 q/query/keyword/keywords 或统计变化，排除固有文案假阳性）。
 4. **3d 取搜索结果**：等待岗位容器出现；空 → 结束站点标"没有相关岗位"；非空 → 取 ≤5 个职位标题。
-5. **3e 筛选记录**：KEYWORD 连续子串命中 → 提取命中职位链接；未命中 → 提取第一个职位链接。
+5. **3e 筛选记录**：KEYWORD 连续子串命中 → 提取命中职位链接；未命中 → 提取第一个职位链接。链接提取按命中率多方法尝试（`<a>` → 祖先 `<a>` → data 属性拼接 → 点击跳转 → SPA 详情按钮 window.open → API 抓 uuid → fiber onClick），必要时直连详情 API 佐证有效性。
+6. **3f 保活关闭**：`close_tab_keepalive` 关闭站点 tab（唯一 tab 前建 about:blank 占位防窗口消失）；失败不阻断流程，仍进入下一站点。
 
 输出：`output/{KEYWORD}岗位检索报告.md`（任务参数 / 匹配结果 / 不匹配结果）。
+
+## 经验沉淀（用户操作）
+
+执行中 M/S 错误由 AI **按站点记录到 `references/site-notes.md`**（URL 入口 + 失败环节 + 原因）；**沉淀动作由用户操作**——M 类（方法不足）→ `scripts/*.py` 加方法；S 类（站点走不通）→ 同坑 ≥2 次升级 `patterns.md` 模式。M/S 语义与记录规范见 `references/site-notes.md` 顶部。
