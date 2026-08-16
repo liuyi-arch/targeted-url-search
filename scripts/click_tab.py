@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""3b 动作：点击目标 Tab（click_tab）；项目/批次选择弹窗选值（click_el_select_option，三环 S 类用，见 site-notes）。"""
+"""3b 动作：点击目标 Tab（click_tab）；React fiber onClick 触发（click_tab_fiber，CVTE 用）；项目/批次选择弹窗选值（click_el_select_option，三环 S 类用，见 site-notes）。"""
 
 
 def click_tab(js, text):
@@ -20,6 +20,27 @@ def click_tab(js, text):
         return JSON.stringify({clicked: false});
     })()
     """ % text)
+
+
+def click_tab_fiber(js, text, container_sel='button, a, div, span'):
+    """**方法2**：React fiber onClick 触发 Tab/按钮（JS click 无效时用，CVTE 坑）。
+    适配坑：CVTE 首页"查看全部岗位"为 BUTTON（无 href），JS click 不触发路由，
+    须触发 React fiber 属性上的 onClick 才跳转。返回 'fiber-clicked'/'js-clicked'/'nf'。"""
+    return js("""
+    (function() {
+        let els = [...document.querySelectorAll(%r)];
+        let el = els.find(e => (e.textContent||'').trim().includes('%s') && e.offsetParent !== null);
+        if (!el) return 'nf';
+        let keys = Object.keys(el).filter(k => k.startsWith('__reactProps'));
+        for (let k of keys) {
+            try {
+                if (el[k] && el[k].onClick) { el[k].onClick({}); return 'fiber-clicked'; }
+            } catch(e) {}
+        }
+        el.click();
+        return 'js-clicked';
+    })()
+    """ % (container_sel, text))
 
 
 def click_el_select_option(js, option_text, confirm_text='确 定'):

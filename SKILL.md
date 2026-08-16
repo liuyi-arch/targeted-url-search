@@ -131,10 +131,11 @@
   - 任一方法脚本成功执行且探测有下拉，进入节点3；任一方法脚本成功执行且探测无下拉，进入节点4；所有方法脚本执行异常，进入3c，归类M。
 - **节点3 · 下拉展开并点击**（ `scripts/hover_expand.py` ）：
   - 方法1 `hover_expand_css(js)`：普通 CSS/JS 下拉 → 1s 后 `click_dropdown_item(js)` 点"职位/岗位"项；
-  - 方法2 `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用节点2 返回的 menu_id，JS dispatchEvent 无效）；**反自动化站点（P2）禁用 goto_url 参数，改用 target_id 定向**（见 patterns.md P2）
+  - 方法2 `hover_expand_antd(cdp, js, menu_id, goto_url)`：antd 系菜单（用节点2 返回的 menu_id，JS dispatchEvent 无效）；**反自动化站点禁用 goto_url 参数，改用 target_id 定向**（见上文"pipe 模式执行约定③"：open_page_create 内置 switch_tab 激活，target_id 跨 pipe 持久）
   - 任一方法脚本成功执行且下拉展开并点击正常，进入节点5；所有方法脚本执行异常，进入3c，归类M。
 - **节点4 · 直接点击tab**（`scripts/click_tab.py`）：
   - 方法1 `click_tab(js, text)`：无下拉时直接点击 Tab；
+  - 方法2 `click_tab_fiber(js, text)`：**React fiber onClick 触发**（JS click 无效时用，CVTE 坑——首页"查看全部岗位"为 BUTTON 无 href，JS click 不触发路由，须触发 `__reactProps.onClick`）；
   - 任一方法脚本成功执行且点击tab正常，进入节点5；所有方法脚本执行异常，进入3c，归类M。
 
 - **节点5 · 验证**（`scripts/nav_verified.py`）：
@@ -158,10 +159,12 @@
   - 方法1 `fill_keyword(js, keyword)`：native setter + InputEvent（`fill_input` 对受控组件无效，禁用），填入后主动 `focus()` 保持焦点；
   - 方法2 `fill_keyword_clickable(js, keyword)`：**受控组件+多框混淆专用**（VIVO/t-ray italent 系）——逐框 elementFromPoint 校验选可见可点框（hit=INPUT）+ native setter（CDP insertText 对受控组件无效，事件到达但 value 被重置）；
   - 任一方法填入成功，进入节点3；所有方法填入失败，结束该站点，归类M。
-- **节点3 · 触发**（`scripts/trigger_search.py`）：
-  - 方法1 `trigger_enter(js)`：派发回车（React onSubmit）；
-  - 方法2 `click_search_btn(js)`：点搜索按钮（onClick 不触发 onSubmit，按钮兜底）；
-  - 方法3 `click_btn_by_selector(js, selector)`：按 CSS 选择器 JS click 指定按钮；
+- **节点3 · 触发**（`scripts/trigger_search.py`，按 3 轮 23 站实测成功率排序）：
+  - 方法1 `trigger_enter(js)`：派发回车（React onSubmit）——**零成本首选**，实测 60%（12/20）直接命中，失败代价低；其余方法均需特定页面元素，前置反而对表单型站点多一次 no-btn 切换；
+  - 方法2 `click_search_btn(js)`：点搜索按钮（onClick 不触发 onSubmit，按钮兜底；网易 ant-input-search-button、Beisen 系"搜索职位"按钮用），实测 6/6=100%；
+  - 方法3 `click_search_icon(js, icon_selector='.searchBox .icon--search')`：**点搜索图标触发**（4399 坑——JS fill+回车无效，点图标有效，URL 变 `?key={词}`），实测 1/1=100%；
+  - 方法4 `search_via_url_param(js, keyword, param='postKey')`：**URL 参数触发搜索**（hotjob/北森系：新安能/荣耀——antd-mobile 搜索框 JS fill+回车均不触发过滤，URL 加 `postKey={词}` 刷新立即生效），实测 1/1=100%；
+  - 方法5 `click_btn_by_selector(js, selector)`：按 CSS 选择器 JS click 指定按钮（**需显式传 selector**，未实测，最后兜底）；
   - 任一方法成功，进入节点4；所有方法触发失败，结束该站点，归类M。
 - **节点4 · 验证生效**（`scripts/search_verified.py`）：
   - 方法1 `url_has_query(js)`；
@@ -194,14 +197,13 @@
 - **节点1 · 判定命中**（`scripts/match_links.py`）：
   - 方法1 `match_titles(titles, keyword)`：KEYWORD 是否为标题**连续子串**；
   - 任一方法脚本成功执行（match_titles 返回列表，命中与否均属正常，空列表=未命中），进入节点2；所有方法脚本执行异常（抛错），结束该站点，归类M。
-- **节点2 · 提取链接**（`scripts/extract_links.py` + `match_links.py` 编排 `extract_matched_links`，按命中率排序，任一成功即停止）：
-  - 方法1 `extract_a_links`：`<a>` 链接提取；
-  - 方法2 `extract_ancestor_a`：卡片本身无 `<a>`，取祖先 `<a>` 的 href（`[data-test=positionItem]` → `/position/{id}/detail?share_token=...`）；
-  - 方法3 `extract_via_attr`：卡片为 div 带 data- 属性（`.position_list_item` 的 `data-jobunionid`）→ 读属性 + URL 模板拼接；
-  - 方法4 `extract_by_click`：JS click 跳转取 URL（SPA 路由跳转场景）；
-  - 方法5 `extract_via_detail_btn`：SPA 内嵌详情面板：点卡片展开面板 → 点"查看详情"按钮 → 重写 window.open 捕获 `/campus/detail?jobAdId={uuid}`；
-  - 方法6 `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接；
-  - 方法7 `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转 → 重写 window.open + 触发 fiber onClick 捕获；
+- **节点2 · 提取链接**（`scripts/extract_links.py` + `match_links.py` 编排 `extract_matched_links`，**按 3 轮实测成功率排序（均 100%，按成本从低到高），任一成功即停止**）：
+  - 方法1 `extract_a_links`：`<a>` 链接提取（零成本；实测 3/3=100%：4399/去哪儿/招商）；
+  - 方法2 `extract_by_click`：JS click 跳转取 URL（SPA 路由跳转场景；实测 2/2=100%：欣旺达/新安能）；
+  - 方法3 `extract_via_window_open_click(js, titles, card_sel=None)`：**卡片有 onclick（原生或 React）且点击 window.open 新标签页**（联想/百度/美团）→ 重写 window.open + 直接 `el.click()` 捕获；比 fiber 版更通用（不依赖 `__reactProps`），兼带 SPA URL 变化兜底；实测 3/3=100%；
+  - 方法4 `extract_via_api`：点击卡片触发 API → 从 performance 资源请求抓 uuid 拼接详情链接（Beisen 系 VIVO/普渡/卓驭/360：`GetSubmitLimit?_timestamp=...&jobAdId={uuid}` → `/campus/detail?jobAdId={uuid}`）；实测 4/4=100%；
+  - 方法5 `extract_via_fiber_onclick`：React/antd 卡片无 `<a>` 且 click 不跳转 → 重写 window.open + 触发 fiber onClick 捕获（未实测，最后尝试）；
+  - 备用底层方法（未编排进主链，可单独调用）：`extract_ancestor_a`（卡片本身无 `<a>`，取祖先 `<a>` href）、`extract_via_attr`（卡片 div 带 data- 属性如美团 `data-jobunionid` → 读属性 + URL 模板拼接）、`extract_via_detail_btn`（SPA 内嵌详情面板：点卡片展开 → 点"查看详情" → 重写 window.open 捕获）；
   - 任一方法脚本成功执行：标题含 KEYWORD（连续子串）→ 取所有精准命中岗位链接，进入3f；标题不含（未命中）→ 兜底取第一个岗位链接，进入3f（命中与未命中均属正常结果）；所有方法脚本执行异常（抛错）或均无法产出岗位链接，结束该站点，归类M。
 
 #### 3f · **保活关闭（强制执行，tab 数保持 ≤2）**
@@ -264,16 +266,16 @@ browser-use doctor  # 验证
 | `open_page_wait.py`   | 3a    | `open_page_wait(js, wait_for_load)`（SPA 极慢加载兜底）                        |
 | `find_tab.py`         | 3b    | `find_tab(js, mode)`                                                          |
 | `tab_has_dropdown.py` | 3b    | `tab_has_dropdown(js, text)` → {has_dropdown, menu_id}（探测有无下拉）      |
-| `click_tab.py`        | 3b    | `click_tab(js, text)`                                                         |
+| `click_tab.py`        | 3b    | `click_tab(js, text)` / `click_tab_fiber(js, text)`（React fiber onClick 触发，CVTE 坑）/ `click_el_select_option(js, option_text)`（el-select 项目弹窗选值，三环坑） |
 | `nav_verified.py`     | 3b    | `nav_verified(js, before_url)`（组合 url_changed/has_*，排除宣传落地页）/ `has_type_evidence(js, mode)` |
 | `url_changed.py`      | 3b    | `url_changed(js, before_url)`                                                 |
-| `has_search_input.py` | 3b/3c | `has_search_input(js)` / `find_visible_search_input(js)`（可见性过滤，推荐）/ `find_clickable_search_input(js)`（elementFromPoint 可点校验，VIVO 坑）/ `find_search_input(js)` / `find_in_iframe(js)` |
+| `has_search_input.py` | 3b/3c | `find_visible_search_input(js)`（可见性过滤，**首选，实测 18/18**）/ `find_clickable_search_input(js)`（elementFromPoint 可点校验，VIVO 坑）/ `find_search_input(js)` / `find_in_iframe(js)` / `has_search_input(js)`（3b 验证 bool） |
 | `has_jobs.py`         | 3b    | `has_jobs(js)`                                                                |
 | `hover_expand.py`     | 3b/3d | 入口：`hover_expand_css(js)` / `hover_expand_antd(cdp, js, menu_id, goto_url=None)` / `click_dropdown_item(js)` / `real_click(cdp, js, selector)`；antd 辅助收敛：`ensure_wide_viewport` / `hover_submenu` / `get_popup_items` / `pick_url` |
 | `fill_keyword.py`     | 3c    | `fill_keyword(js, keyword)`（native setter，禁用 fill_input）/ `fill_keyword_clickable(js, keyword)`（可见可点框，受控组件+多框混淆 VIVO/t-ray 用） |
-| `trigger_search.py`   | 3c    | `trigger_enter(js)` / `click_search_btn(js)` / `click_btn_by_selector(js, selector)`（JS click 指定按钮） |
+| `trigger_search.py`   | 3c    | `trigger_enter(js)`（**零成本首选，实测 60%**）/ `click_search_btn(js)`（实测 6/6）/ `click_search_icon(js)`（4399 点搜索图标，实测 1/1）/ `search_via_url_param(js, keyword, param='postKey')`（hotjob 系新安能/荣耀，URL 参数触发，实测 1/1）/ `click_btn_by_selector(js, selector)`（需显式 selector，最后兜底） |
 | `search_verified.py`  | 3c    | `url_has_query(js)`（含 keywords=） / `stats_changed(js)`（排除固有文案假阳性） / `search_verified(js)` |
 | `wait_results.py`     | 3d    | `wait_jobs(js, wait_for_load)`                                                |
 | `extract_titles.py`   | 3d    | `get_job_titles`（底层 `extract_container_titles`；空则 `extract_a_links` 兜底） |
-| `extract_links.py`    | 3e    | 底层方法：`extract_a_links` / `extract_by_click` / `extract_via_fiber_onclick` / `extract_ancestor_a` / `extract_via_attr` / `extract_via_detail_btn` / `extract_via_api` |
+| `extract_links.py`    | 3e    | 底层方法（编排顺序见 match_links.py，均实测 100%）：`extract_a_links` / `extract_by_click` / `extract_via_window_open_click`（卡片 onclick+window.open，联想/百度/美团）/ `extract_via_api`（Beisen 系 GetSubmitLimit）/ `extract_via_fiber_onclick`；备用：`extract_ancestor_a` / `extract_via_attr` / `extract_via_detail_btn` |
 | `match_links.py`      | 3e    | 判定 + 编排：`match_titles` / `extract_matched_links`（依赖 extract_links 底层方法） |
